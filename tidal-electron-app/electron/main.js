@@ -4,12 +4,176 @@ const path = require('path');
 const isDev = require('electron-is-dev');
 const fs = require('fs');
 const os = require('os');
+const https = require('https');
 
 let mainWindow;
 let downloadProcess = null;
+let downloadQueue = [];
+let isProcessingQueue = false;
 
 // Store user preferences
 const prefsPath = path.join(os.homedir(), '.tidal_downloader_prefs.json');
+
+// Helper functions
+function cleanTidalUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    // Remove tracking parameters like ?u
+    urlObj.search = '';
+    return urlObj.toString();
+  } catch (error) {
+    return url; // Return original if parsing fails
+  }
+}
+
+function fetchSongMetadata(url) {
+  return new Promise((resolve, reject) => {
+    const cleanUrl = cleanTidalUrl(url);
+    
+    https.get(cleanUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+      }
+    }, (res) => {
+      let html = '';
+      
+      res.on('data', (chunk) => {
+        html += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          // Extract song title from meta tags or title
+          let title = 'Unknown Track';
+          let artist = 'Unknown Artist';
+          
+          // Try to extract from title tag
+          const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+          if (titleMatch) {
+            const fullTitle = titleMatch[1].replace(' - TIDAL', '').trim();
+            // Try to split artist - track
+            const parts = fullTitle.split(' - ');
+            if (parts.length >= 2) {
+              artist = parts[0].trim();
+              title = parts.slice(1).join(' - ').trim();
+            } else {
+              title = fullTitle;
+            }
+          }
+          
+          // Try to extract from meta tags
+          const artistMatch = html.match(/<meta[^>]*name=["\']twitter:audio:artist["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+          if (artistMatch) {
+            artist = artistMatch[1];
+          }
+          
+          const trackMatch = html.match(/<meta[^>]*name=["\']twitter:title["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+          if (trackMatch) {
+            title = trackMatch[1];
+          }
+          
+          resolve({
+            title: title,
+            artist: artist,
+            url: cleanUrl,
+            originalUrl: url
+          });
+        } catch (error) {
+          reject(new Error('Failed to parse song metadata'));
+        }
+      });
+    }).on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
+async function processQueue() {
+  if (isProcessingQueue || downloadQueue.length === 0) {
+    return;
+  }
+  
+  const nextItem = downloadQueue.find(item => item.status === 'queued');
+  if (!nextItem) {
+    return;
+  }
+  
+  isProcessingQueue = true;
+  nextItem.status = 'downloading';
+  nextItem.progress = 0;
+  
+  mainWindow.webContents.send('queue-updated', downloadQueue);
+  
+  try {
+    await downloadSong(nextItem);
+    nextItem.status = 'completed';
+    nextItem.progress = 100;
+  } catch (error) {
+    nextItem.status = 'failed';
+    nextItem.error = error.message;
+    nextItem.progress = 0;
+  }
+  
+  mainWindow.webContents.send('queue-updated', downloadQueue);
+  isProcessingQueue = false;
+  
+  // Process next item in queue
+  setTimeout(() => processQueue(), 1000);
+}
+
+function downloadSong(queueItem) {
+  return new Promise((resolve, reject) => {
+    const pythonScript = isDev 
+      ? path.join(__dirname, '../../tidal_downloader.py')
+      : path.join(process.resourcesPath, 'python/tidal_downloader.py');
+    
+    const args = [pythonScript, queueItem.url];
+    if (queueItem.format === 'flac') {
+      args.push('--no-mp3');
+      args.push('-f', 'flac');
+    } else {
+      args.push('-f', 'mp3');
+    }
+    args.push('-o', queueItem.downloadPath);
+    
+    console.log('Starting download for queue item:', queueItem.id, args);
+    
+    const process = spawn('python3', args);
+    
+    let output = '';
+    let errorOutput = '';
+    
+    process.stdout.on('data', (data) => {
+      const text = data.toString();
+      output += text;
+      
+      // Update progress for this specific queue item
+      if (text.includes('Progress:')) {
+        const progressMatch = text.match(/Progress: ([\d.]+)%/);
+        if (progressMatch) {
+          queueItem.progress = parseFloat(progressMatch[1]);
+          mainWindow.webContents.send('queue-updated', downloadQueue);
+        }
+      }
+    });
+    
+    process.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+    
+    process.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true, output });
+      } else {
+        reject(new Error(errorOutput || `Process exited with code ${code}`));
+      }
+    });
+    
+    process.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
 
 function createWindow() {
   // Create the browser window
@@ -123,6 +287,64 @@ ipcMain.handle('select-folder', async () => {
   }
   
   return null;
+});
+
+// Queue management handlers
+ipcMain.handle('add-to-queue', async (event, { url, format, downloadPath }) => {
+  try {
+    console.log('Fetching metadata for:', url);
+    const metadata = await fetchSongMetadata(url);
+    
+    const queueItem = {
+      id: Date.now().toString(),
+      ...metadata,
+      format,
+      downloadPath,
+      status: 'queued',
+      addedAt: new Date().toISOString(),
+      progress: 0
+    };
+    
+    downloadQueue.push(queueItem);
+    
+    // Notify frontend about queue update
+    mainWindow.webContents.send('queue-updated', downloadQueue);
+    
+    // Start processing queue if not already processing
+    processQueue();
+    
+    return { success: true, item: queueItem };
+  } catch (error) {
+    console.error('Error adding to queue:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-queue', async () => {
+  return downloadQueue;
+});
+
+ipcMain.handle('remove-from-queue', async (event, itemId) => {
+  const index = downloadQueue.findIndex(item => item.id === itemId);
+  if (index !== -1) {
+    downloadQueue.splice(index, 1);
+    mainWindow.webContents.send('queue-updated', downloadQueue);
+    return { success: true };
+  }
+  return { success: false, error: 'Item not found' };
+});
+
+ipcMain.handle('retry-download', async (event, itemId) => {
+  const item = downloadQueue.find(item => item.id === itemId);
+  if (item) {
+    item.status = 'queued';
+    item.progress = 0;
+    item.error = null;
+    mainWindow.webContents.send('queue-updated', downloadQueue);
+    processQueue();
+    return { success: true };
+  }
+  return { success: false, error: 'Item not found' };
 });
 
 ipcMain.handle('start-download', async (event, { url, format, downloadPath }) => {

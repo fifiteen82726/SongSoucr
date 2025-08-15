@@ -15,9 +15,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('start-download', { url, format, downloadPath }),
   cancelDownload: () => ipcRenderer.invoke('cancel-download'),
   
+  // Queue functionality
+  addToQueue: ({ url, format, downloadPath }) =>
+    ipcRenderer.invoke('add-to-queue', { url, format, downloadPath }),
+  getQueue: () => ipcRenderer.invoke('get-queue'),
+  removeFromQueue: (itemId) => ipcRenderer.invoke('remove-from-queue', itemId),
+  retryDownload: (itemId) => ipcRenderer.invoke('retry-download', itemId),
+  
   // Progress updates
   onDownloadProgress: (callback) => {
     ipcRenderer.on('download-progress', (event, data) => callback(data));
+  },
+  onQueueUpdated: (callback) => {
+    ipcRenderer.on('queue-updated', (event, data) => callback(data));
   },
   
   // Cleanup listener

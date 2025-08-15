@@ -5,6 +5,7 @@ import LocationSection from './components/LocationSection';
 import ProgressSection from './components/ProgressSection';
 import DownloadButton from './components/DownloadButton';
 import FailedDownloads from './components/FailedDownloads';
+import QueueSection from './components/QueueSection';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -15,6 +16,8 @@ function App() {
   const [status, setStatus] = useState('Ready to download your music! 🎵');
   const [activeTab, setActiveTab] = useState('download');
   const [failedDownloads, setFailedDownloads] = useState([]);
+  const [queue, setQueue] = useState([]);
+  const [isAddingToQueue, setIsAddingToQueue] = useState(false);
 
   // Load preferences on mount
   useEffect(() => {
@@ -116,6 +119,34 @@ function App() {
     }
   }, []);
 
+  // Listen for queue updates
+  useEffect(() => {
+    if (window.electronAPI) {
+      const handleQueueUpdate = (queueData) => {
+        console.log('Queue update:', queueData);
+        setQueue(queueData);
+      };
+
+      window.electronAPI.onQueueUpdated(handleQueueUpdate);
+
+      // Load initial queue
+      const loadQueue = async () => {
+        try {
+          const initialQueue = await window.electronAPI.getQueue();
+          setQueue(initialQueue);
+        } catch (error) {
+          console.error('Error loading queue:', error);
+        }
+      };
+
+      loadQueue();
+
+      return () => {
+        window.electronAPI.removeAllListeners('queue-updated');
+      };
+    }
+  }, []);
+
   const validateInputs = () => {
     if (!url.trim()) {
       setStatus('❌ Please enter a Tidal URL');
@@ -186,6 +217,52 @@ function App() {
     setFailedDownloads(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Queue functions
+  const handleAddToQueue = async () => {
+    if (!validateInputs()) {
+      return;
+    }
+
+    setIsAddingToQueue(true);
+    setStatus('🔍 Fetching song information...');
+
+    try {
+      const result = await window.electronAPI.addToQueue({
+        url: url.trim(),
+        format,
+        downloadPath
+      });
+
+      if (result.success) {
+        setUrl(''); // Clear the input after successful addition
+        setStatus(`✅ Added "${result.item.title}" by ${result.item.artist} to queue!`);
+      } else {
+        setStatus(`❌ Failed to add to queue: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error adding to queue:', error);
+      setStatus(`❌ Error adding to queue: ${error.message}`);
+    }
+
+    setIsAddingToQueue(false);
+  };
+
+  const handleRetryQueueItem = async (itemId) => {
+    try {
+      await window.electronAPI.retryDownload(itemId);
+    } catch (error) {
+      console.error('Error retrying download:', error);
+    }
+  };
+
+  const handleRemoveQueueItem = async (itemId) => {
+    try {
+      await window.electronAPI.removeFromQueue(itemId);
+    } catch (error) {
+      console.error('Error removing from queue:', error);
+    }
+  };
+
   return (
     <div className="app">
       <div className="container">
@@ -200,7 +277,13 @@ function App() {
             className={`tab-button ${activeTab === 'download' ? 'active' : ''}`}
             onClick={() => setActiveTab('download')}
           >
-            📥 Download
+            📥 Add Songs
+          </button>
+          <button
+            className={`tab-button ${activeTab === 'queue' ? 'active' : ''}`}
+            onClick={() => setActiveTab('queue')}
+          >
+            📋 Queue ({queue.length})
           </button>
           <button
             className={`tab-button ${activeTab === 'failed' ? 'active' : ''}`}
@@ -216,33 +299,47 @@ function App() {
             <URLSection 
               url={url} 
               setUrl={setUrl}
-              disabled={isDownloading}
+              disabled={isAddingToQueue}
+              loading={isAddingToQueue}
             />
 
             <FormatSection 
               format={format} 
               setFormat={setFormat}
-              disabled={isDownloading}
+              disabled={isAddingToQueue}
             />
 
             <LocationSection 
               downloadPath={downloadPath} 
               setDownloadPath={setDownloadPath}
-              disabled={isDownloading}
+              disabled={isAddingToQueue}
             />
 
-            <ProgressSection 
-              progress={progress}
-              status={status}
-            />
+            <div className="section status-section">
+              <div className="status-text">
+                {status}
+              </div>
+            </div>
 
-            <DownloadButton
-              onStartDownload={handleStartDownload}
-              onCancelDownload={handleCancelDownload}
-              isDownloading={isDownloading}
-              disabled={isDownloading}
-            />
+            <div className="section button-section">
+              <button
+                className="add-to-queue-btn"
+                onClick={handleAddToQueue}
+                disabled={isAddingToQueue || !url.trim() || !downloadPath.trim()}
+              >
+                {isAddingToQueue ? '🔍 Fetching Info...' : '➕ Add to Queue'}
+              </button>
+            </div>
           </>
+        )}
+
+        {/* Queue Tab */}
+        {activeTab === 'queue' && (
+          <QueueSection
+            queue={queue}
+            onRetry={handleRetryQueueItem}
+            onRemove={handleRemoveQueueItem}
+          />
         )}
 
         {/* Failed Downloads Tab */}
