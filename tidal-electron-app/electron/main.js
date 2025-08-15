@@ -25,7 +25,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       webSecurity: false // Disable web security for development
     },
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: 'default',
     show: false,
     icon: path.join(__dirname, '../assets/icon.png')
   });
