@@ -43,34 +43,103 @@ function fetchSongMetadata(url) {
       
       res.on('end', () => {
         try {
+          // Debug: log the HTML content
+          console.log('Fetched HTML length:', html.length);
+          console.log('HTML preview:', html.substring(0, 1000));
+          
           // Extract song title from meta tags or title
           let title = 'Unknown Track';
           let artist = 'Unknown Artist';
           
-          // Try to extract from title tag
-          const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-          if (titleMatch) {
-            const fullTitle = titleMatch[1].replace(' - TIDAL', '').trim();
-            // Try to split artist - track
-            const parts = fullTitle.split(' - ');
-            if (parts.length >= 2) {
-              artist = parts[0].trim();
-              title = parts.slice(1).join(' - ').trim();
-            } else {
-              title = fullTitle;
+          // Try to extract from JSON-LD structured data first
+          const jsonLdMatches = html.match(/<script[^>]*type=["\']application\/ld\+json["\'][^>]*>(.*?)<\/script>/gis);
+          if (jsonLdMatches) {
+            for (const match of jsonLdMatches) {
+              try {
+                const jsonContent = match.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
+                const jsonData = JSON.parse(jsonContent);
+                
+                // Look for MusicRecording type
+                if (jsonData['@type'] === 'MusicRecording' || 
+                    (Array.isArray(jsonData) && jsonData.some(item => item['@type'] === 'MusicRecording'))) {
+                  
+                  const musicData = Array.isArray(jsonData) ? 
+                    jsonData.find(item => item['@type'] === 'MusicRecording') : jsonData;
+                  
+                  if (musicData.name) {
+                    title = musicData.name;
+                  }
+                  
+                  if (musicData.byArtist) {
+                    if (Array.isArray(musicData.byArtist)) {
+                      artist = musicData.byArtist.map(a => a.name).join(', ');
+                    } else if (musicData.byArtist.name) {
+                      artist = musicData.byArtist.name;
+                    }
+                  }
+                  
+                  break; // Found what we need
+                }
+              } catch (e) {
+                // Continue to next JSON-LD block
+                console.log('Failed to parse JSON-LD block:', e);
+              }
             }
           }
           
-          // Try to extract from meta tags
-          const artistMatch = html.match(/<meta[^>]*name=["\']twitter:audio:artist["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
-          if (artistMatch) {
-            artist = artistMatch[1];
+          // Try various meta tags for title and artist
+          if (title === 'Unknown Track') {
+            // Try og:title
+            const ogTitleMatch = html.match(/<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+            if (ogTitleMatch) {
+              title = ogTitleMatch[1];
+            }
+            
+            // Try twitter:title
+            const twitterTitleMatch = html.match(/<meta[^>]*name=["\']twitter:title["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+            if (twitterTitleMatch && title === 'Unknown Track') {
+              title = twitterTitleMatch[1];
+            }
           }
           
-          const trackMatch = html.match(/<meta[^>]*name=["\']twitter:title["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
-          if (trackMatch) {
-            title = trackMatch[1];
+          if (artist === 'Unknown Artist') {
+            // Try og:description which might contain artist info
+            const ogDescMatch = html.match(/<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+            if (ogDescMatch) {
+              const desc = ogDescMatch[1];
+              // Look for "by Artist" pattern in description
+              const byMatch = desc.match(/by\s+([^,\n\r]+)/i);
+              if (byMatch) {
+                artist = byMatch[1].trim();
+              }
+            }
+            
+            // Try twitter:audio:artist
+            const twitterArtistMatch = html.match(/<meta[^>]*name=["\']twitter:audio:artist["\'][^>]*content=["\']([^"']+)["\'][^>]*>/i);
+            if (twitterArtistMatch) {
+              artist = twitterArtistMatch[1];
+            }
           }
+          
+          // Fallback: Try to extract from title tag if still unknown
+          if (title === 'Unknown Track') {
+            const pageTitleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+            if (pageTitleMatch) {
+              const fullTitle = pageTitleMatch[1].replace(' - TIDAL', '').trim();
+              const byMatch = fullTitle.match(/^(.+?)\s+by\s+(.+)$/i);
+              if (byMatch) {
+                title = byMatch[1].trim();
+                if (artist === 'Unknown Artist') {
+                  artist = byMatch[2].trim();
+                }
+              } else {
+                title = fullTitle;
+              }
+            }
+          }
+          
+          console.log('Extracted title:', title);
+          console.log('Extracted artist:', artist);
           
           resolve({
             title: title,
@@ -132,11 +201,14 @@ function downloadSong(queueItem) {
       args.push('--no-mp3');
       args.push('-f', 'flac');
     } else {
-      args.push('-f', 'mp3');
+      // For MP3 320kbps, download as FLAC and convert to MP3 320kbps
+      args.push('-f', 'flac');
+      // Don't add --no-mp3, so it will convert to MP3 320kbps
     }
     args.push('-o', queueItem.downloadPath);
     
-    console.log('Starting download for queue item:', queueItem.id, args);
+    console.log('Starting download for queue item:', queueItem.id);
+    console.log('Command args:', args);
     
     const process = spawn('python3', args);
     

@@ -1,6 +1,8 @@
 import React from 'react';
 
 function QueueSection({ queue, onRetry, onRemove }) {
+  console.log('QueueSection received queue:', queue);
+  
   const getStatusIcon = (status) => {
     switch (status) {
       case 'queued': return '⏳';
@@ -38,7 +40,9 @@ function QueueSection({ queue, onRetry, onRemove }) {
         </div>
       ) : (
         <div className="queue-list">
-          {queue.map((item) => (
+          {queue.map((item) => {
+            console.log('Rendering queue item:', item);
+            return (
             <div key={item.id} className="queue-item">
               <div className="queue-item-header">
                 <div className="queue-item-info">
@@ -49,10 +53,10 @@ function QueueSection({ queue, onRetry, onRemove }) {
                     >
                       {getStatusIcon(item.status)}
                     </span>
-                    <strong>{item.title}</strong>
+                    <strong>{item.title || 'Loading title...'}</strong>
                   </div>
                   <div className="queue-item-artist">
-                    by {item.artist}
+                    by {item.artist || 'Loading artist...'}
                   </div>
                 </div>
                 
@@ -103,7 +107,8 @@ function QueueSection({ queue, onRetry, onRemove }) {
                 <span>Added: {new Date(item.addedAt).toLocaleTimeString()}</span>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
     </div>

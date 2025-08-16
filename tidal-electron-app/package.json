@@ -39,7 +39,14 @@
       "build/**/*",
       "electron/**/*",
       "python/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "../tidal_downloader.py"
+    ],
+    "extraResources": [
+      {
+        "from": "../tidal_downloader.py",
+        "to": "python/tidal_downloader.py"
+      }
     ],
     "mac": {
       "category": "public.app-category.music",
