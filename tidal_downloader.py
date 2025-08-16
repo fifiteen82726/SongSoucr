@@ -11,6 +11,17 @@ import subprocess
 import os
 import shutil
 from pathlib import Path
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/tidal_downloader.log'),
+        logging.StreamHandler()
+    ]
+)
 
 class TidalDownloader:
     def __init__(self, base_url="https://us.doubledouble.top"):
@@ -53,6 +64,11 @@ class TidalDownloader:
         """Download music from Tidal URL"""
         # Clean the URL by removing tracking parameters
         clean_url = self._clean_tidal_url(tidal_url)
+        logging.info(f"Starting download for: {clean_url}")
+        logging.info(f"Format: {format_type}")
+        logging.info(f"Output dir: {output_dir}")
+        logging.info(f"Convert to MP3: {convert_to_mp3}")
+        logging.info(f"Extract ZIP: {extract_zip}")
         print(f"Starting download for: {clean_url}")
         print(f"Format: {format_type}")
         
@@ -81,11 +97,39 @@ class TidalDownloader:
             if not zip_path:
                 return False
                 
-            # Step 3: Extract and convert if requested
-            if extract_zip:
+            # Step 3: Handle conversion for direct downloads or ZIP files
+            file_path = Path(zip_path)
+            logging.info(f"Downloaded file path: {file_path}")
+            logging.info(f"File extension: {file_path.suffix.lower()}")
+            
+            # Check if we got a direct audio file (not a ZIP)
+            if file_path.suffix.lower() in ['.flac', '.ogg', '.wav', '.m4a', '.mp3']:
+                logging.info(f"Direct audio file detected: {file_path}")
+                print(f"CONVERSION DEBUG: Direct audio file detected: {file_path}")
+                if convert_to_mp3 and file_path.suffix.lower() != '.mp3':
+                    logging.info(f"Converting direct file to MP3...")
+                    print(f"CONVERSION DEBUG: Converting direct file to MP3...")
+                    mp3_files = self._convert_to_mp3([str(file_path)], output_dir)
+                    logging.info(f"MP3 conversion result: {mp3_files}")
+                    if mp3_files:
+                        # Remove original file after successful conversion
+                        try:
+                            os.remove(file_path)
+                            logging.info(f"Removed original file: {file_path.name}")
+                            print(f"Removed original file: {file_path.name}")
+                        except Exception as e:
+                            logging.error(f"Could not remove original file: {e}")
+                            print(f"Could not remove original file: {e}")
+                elif not convert_to_mp3:
+                    logging.info(f"Keeping original format: {file_path.suffix}")
+                    print(f"Keeping original format: {file_path.suffix}")
+            elif extract_zip:
+                # Handle ZIP files as before
                 extracted_files = self._extract_zip(zip_path, output_dir)
                 if convert_to_mp3 and extracted_files:
+                    print(f"CONVERSION DEBUG: convert_to_mp3={convert_to_mp3}, extracted_files={extracted_files}")
                     mp3_files = self._convert_to_mp3(extracted_files, output_dir)
+                    print(f"CONVERSION DEBUG: mp3_files after conversion={mp3_files}")
                     self._cleanup_files(zip_path, extracted_files, mp3_files, output_dir)
                 elif not convert_to_mp3:
                     # If not converting to MP3, just remove the ZIP file
