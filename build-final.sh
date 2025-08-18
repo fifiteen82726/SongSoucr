@@ -34,12 +34,15 @@ else
 fi
 
 log "📥 Downloading FFmpeg binary..."
+mkdir -p binaries
 if [ ! -f "binaries/ffmpeg" ]; then
+    log "Downloading FFmpeg from evermeet.cx..."
     curl -L "https://evermeet.cx/ffmpeg/ffmpeg-6.0.zip" -o /tmp/ffmpeg.zip
     cd /tmp && unzip -q ffmpeg.zip
-    cp ffmpeg /Users/codachang/Desktop/DJ/tidalDownloader/binaries/
+    cp ffmpeg "$(dirname "$0")/binaries/"
     rm ffmpeg.zip ffmpeg
-    cd /Users/codachang/Desktop/DJ/tidalDownloader
+    cd "$(dirname "$0")"
+    log "✅ FFmpeg downloaded and ready"
 else
     log "✅ FFmpeg binary already exists"
 fi

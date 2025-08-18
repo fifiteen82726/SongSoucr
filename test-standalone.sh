@@ -16,7 +16,7 @@ if [ -f "/Users/codachang/Desktop/DJ/tidalDownloader/binaries/tidal-downloader" 
         echo "❌ Executable has issues"
     fi
 else
-    echo "❌ Standalone executable not found"
+    echo "⚠️  Standalone executable not found (will be created during build)"
 fi
 
 # Test FFmpeg binary
@@ -33,7 +33,7 @@ if [ -f "/Users/codachang/Desktop/DJ/tidalDownloader/binaries/ffmpeg" ]; then
         echo "❌ FFmpeg has issues"
     fi
 else
-    echo "❌ FFmpeg binary not found"
+    echo "⚠️  FFmpeg binary not found (will be downloaded during build)"
 fi
 
 # Test app bundle

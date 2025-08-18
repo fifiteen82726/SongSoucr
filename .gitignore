@@ -5,6 +5,10 @@ yarn-debug.log*
 yarn-error.log*
 package-lock.json
 
+# Large binaries (downloaded during build)
+binaries/ffmpeg
+binaries/tidal-downloader
+
 # Build outputs
 build/
 dist/

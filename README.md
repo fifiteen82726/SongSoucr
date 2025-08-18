@@ -61,8 +61,8 @@ cd tidalDownloader
 
 **What it creates:**
 - 144MB DMG with ZERO user dependencies
-- Bundled Python runtime (7MB PyInstaller executable)
-- Bundled FFmpeg binary (75MB)
+- Bundled Python runtime (7MB PyInstaller executable)  
+- Bundled FFmpeg binary (75MB, downloaded during build)
 - Works on any Mac without installations
 
 **Best for:** Final releases, non-technical users, distribution
@@ -184,9 +184,9 @@ yarn electron-dev
 ```
 tidalDownloader/
 ├── tidal_downloader.py          # Python backend script
-├── binaries/                    # Standalone executables
-│   ├── tidal-downloader         # PyInstaller executable
-│   └── ffmpeg                   # FFmpeg binary
+├── binaries/                    # Standalone executables (created during build)
+│   ├── tidal-downloader         # PyInstaller executable (built locally)
+│   └── ffmpeg                   # FFmpeg binary (downloaded during build)
 ├── tidal-electron-app/          # Electron app
 │   ├── src/                     # React frontend
 │   ├── electron/                # Electron main process
