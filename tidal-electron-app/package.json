@@ -2,12 +2,12 @@
   "name": "tidal-downloader",
   "version": "1.0.0",
   "description": "Professional Tidal music downloader for DJs",
-  "main": "electron/main.js",
+  "main": "build/electron.js",
   "homepage": "./",
   "private": true,
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "react-scripts build && cp electron/main.js build/electron.js && cp electron/preload.js build/preload.js",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron": "electron .",
@@ -37,15 +37,16 @@
     },
     "files": [
       "build/**/*",
-      "electron/**/*",
-      "python/**/*",
-      "node_modules/**/*",
-      "../tidal_downloader.py"
+      "node_modules/**/*"
     ],
     "extraResources": [
       {
-        "from": "../tidal_downloader.py",
-        "to": "python/tidal_downloader.py"
+        "from": "../binaries/tidal-downloader",
+        "to": "binaries/tidal-downloader"
+      },
+      {
+        "from": "../binaries/ffmpeg",
+        "to": "binaries/ffmpeg"
       }
     ],
     "mac": {
@@ -58,12 +59,10 @@
             "arm64"
           ]
         }
-      ],
-      "icon": "assets/icon.icns"
+      ]
     },
     "dmg": {
       "title": "Tidal Downloader",
-      "background": "assets/dmg-background.png",
       "window": {
         "width": 540,
         "height": 380

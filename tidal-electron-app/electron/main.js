@@ -192,11 +192,21 @@ async function processQueue() {
 
 function downloadSong(queueItem) {
   return new Promise((resolve, reject) => {
-    const pythonScript = isDev 
-      ? path.join(__dirname, '../../tidal_downloader.py')
-      : path.join(process.resourcesPath, 'python/tidal_downloader.py');
+    // Use standalone executable in production, Python script in development
+    const executablePath = isDev 
+      ? 'python3'
+      : path.join(process.resourcesPath, 'binaries/tidal-downloader');
     
-    const args = [pythonScript, queueItem.url];
+    // Set FFmpeg path for the executable
+    if (!isDev) {
+      const ffmpegPath = path.join(process.resourcesPath, 'binaries/ffmpeg');
+      const ffmpegDir = path.dirname(ffmpegPath);
+      process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+    }
+    
+    const args = isDev 
+      ? [path.join(__dirname, '../../tidal_downloader.py'), queueItem.url]
+      : [queueItem.url];
     if (queueItem.format === 'flac') {
       args.push('--no-mp3');
       args.push('-f', 'flac');
@@ -210,7 +220,7 @@ function downloadSong(queueItem) {
     console.log('Starting download for queue item:', queueItem.id);
     console.log('Command args:', args);
     
-    const process = spawn('python3', args);
+    const process = spawn(executablePath, args);
     
     let output = '';
     let errorOutput = '';
@@ -421,13 +431,22 @@ ipcMain.handle('retry-download', async (event, itemId) => {
 
 ipcMain.handle('start-download', async (event, { url, format, downloadPath }) => {
   return new Promise((resolve, reject) => {
-    // Path to the Python script
-    const pythonScript = isDev 
-      ? path.join(__dirname, '../../tidal_downloader.py')
-      : path.join(process.resourcesPath, 'python/tidal_downloader.py');
+    // Use standalone executable in production, Python script in development
+    const executablePath = isDev 
+      ? 'python3'
+      : path.join(process.resourcesPath, 'binaries/tidal-downloader');
+    
+    // Set FFmpeg path for the executable
+    if (!isDev) {
+      const ffmpegPath = path.join(process.resourcesPath, 'binaries/ffmpeg');
+      const ffmpegDir = path.dirname(ffmpegPath);
+      process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+    }
     
     // Prepare arguments
-    const args = [pythonScript, url];
+    const args = isDev 
+      ? [path.join(__dirname, '../../tidal_downloader.py'), url]
+      : [url];
     if (format === 'flac') {
       args.push('--no-mp3');
       args.push('-f', 'flac');
@@ -439,7 +458,7 @@ ipcMain.handle('start-download', async (event, { url, format, downloadPath }) =>
     console.log('Starting download with args:', args);
     
     // Spawn Python process
-    downloadProcess = spawn('python3', args);
+    downloadProcess = spawn(executablePath, args);
     
     let output = '';
     let errorOutput = '';
