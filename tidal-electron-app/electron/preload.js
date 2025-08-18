@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // File system
   selectFolder: () => ipcRenderer.invoke('select-folder'),
+  openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
   
   // Download functionality
   startDownload: ({ url, format, downloadPath }) => 

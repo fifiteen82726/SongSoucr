@@ -1,7 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
-const isDev = require('electron-is-dev');
+// More reliable way to detect development mode
+const isDev = process.env.NODE_ENV === 'development' || process.defaultApp || /[\\/]electron-prebuilt[\\/]/.test(process.execPath) || /[\\/]electron[\\/]/.test(process.execPath);
+console.log('Development mode detection:', { isDev, NODE_ENV: process.env.NODE_ENV, defaultApp: process.defaultApp });
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
@@ -197,11 +199,19 @@ function downloadSong(queueItem) {
       ? 'python3'
       : path.join(process.resourcesPath, 'binaries/tidal-downloader');
     
+    // Verify executable exists
+    console.log('Queue download - Executable path:', executablePath);
+    console.log('Queue download - isDev:', isDev);
+    console.log('Queue download - process.resourcesPath:', process.resourcesPath);
+    
     // Set FFmpeg path for the executable
     if (!isDev) {
       const ffmpegPath = path.join(process.resourcesPath, 'binaries/ffmpeg');
       const ffmpegDir = path.dirname(ffmpegPath);
       process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+      console.log('Queue download - FFmpeg path:', ffmpegPath);
+      console.log('Queue download - FFmpeg exists:', fs.existsSync(ffmpegPath));
+      console.log('Queue download - Executable exists:', fs.existsSync(executablePath));
     }
     
     const args = isDev 
@@ -219,13 +229,26 @@ function downloadSong(queueItem) {
     
     console.log('Starting download for queue item:', queueItem.id);
     console.log('Command args:', args);
+    console.log('About to spawn process with:', { executablePath, args });
     
-    const process = spawn(executablePath, args);
+    let downloadProcess;
+    try {
+      downloadProcess = spawn(executablePath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env }
+      });
+      
+      console.log('Process spawned successfully, PID:', downloadProcess.pid);
+    } catch (spawnError) {
+      console.error('Failed to spawn process:', spawnError);
+      reject(new Error(`Failed to start download process: ${spawnError.message}`));
+      return;
+    }
     
     let output = '';
     let errorOutput = '';
     
-    process.stdout.on('data', (data) => {
+    downloadProcess.stdout.on('data', (data) => {
       const text = data.toString();
       output += text;
       
@@ -239,11 +262,11 @@ function downloadSong(queueItem) {
       }
     });
     
-    process.stderr.on('data', (data) => {
+    downloadProcess.stderr.on('data', (data) => {
       errorOutput += data.toString();
     });
     
-    process.on('close', (code) => {
+    downloadProcess.on('close', (code) => {
       if (code === 0) {
         resolve({ success: true, output });
       } else {
@@ -251,13 +274,18 @@ function downloadSong(queueItem) {
       }
     });
     
-    process.on('error', (error) => {
+    downloadProcess.on('error', (error) => {
       reject(error);
     });
   });
 }
 
 function createWindow() {
+  console.log('Creating main window...');
+  console.log('isDev:', isDev);
+  console.log('App ready status:', app.isReady());
+  console.log('Resource path:', process.resourcesPath);
+  
   // Create the browser window
   mainWindow = new BrowserWindow({
     width: 900,
@@ -291,8 +319,10 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // Always open DevTools for debugging
-  mainWindow.webContents.openDevTools();
+  // Open DevTools only in development
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
   
   // Handle load failures
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
@@ -314,7 +344,12 @@ function createWindow() {
 }
 
 // App event handlers
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  console.log('App is ready, creating window...');
+  createWindow();
+}).catch(err => {
+  console.error('Failed to create window:', err);
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -369,6 +404,20 @@ ipcMain.handle('select-folder', async () => {
   }
   
   return null;
+});
+
+ipcMain.handle('open-folder', async (event, folderPath) => {
+  try {
+    if (folderPath && fs.existsSync(folderPath)) {
+      await shell.openPath(folderPath);
+      return { success: true };
+    } else {
+      return { success: false, error: 'Folder does not exist' };
+    }
+  } catch (error) {
+    console.error('Error opening folder:', error);
+    return { success: false, error: error.message };
+  }
 });
 
 // Queue management handlers

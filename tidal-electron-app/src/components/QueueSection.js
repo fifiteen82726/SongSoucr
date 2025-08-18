@@ -1,6 +1,6 @@
 import React from 'react';
 
-function QueueSection({ queue, onRetry, onRemove }) {
+function QueueSection({ queue, onRetry, onRemove, downloadPath }) {
   console.log('QueueSection received queue:', queue);
   
   const getStatusIcon = (status) => {
@@ -23,10 +23,34 @@ function QueueSection({ queue, onRetry, onRemove }) {
     }
   };
 
+  const handleOpenFolder = async () => {
+    if (window.electronAPI && downloadPath) {
+      try {
+        const result = await window.electronAPI.openFolder(downloadPath);
+        if (!result.success) {
+          console.error('Failed to open folder:', result.error);
+        }
+      } catch (error) {
+        console.error('Error opening folder:', error);
+      }
+    }
+  };
+
   return (
     <div className="section queue-section">
-      <div className="section-title" style={{ color: 'white' }}>
-        📋 DOWNLOAD QUEUE ({queue.length})
+      <div className="queue-header">
+        <div className="section-title" style={{ color: 'black' }}>
+          📋 DOWNLOAD QUEUE ({queue.length})
+        </div>
+        {downloadPath && (
+          <button 
+            className="open-folder-btn"
+            onClick={handleOpenFolder}
+            title="Open download folder"
+          >
+            📂 Open Folder
+          </button>
+        )}
       </div>
       
       {queue.length === 0 ? (

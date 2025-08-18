@@ -14,6 +14,19 @@ function LocationSection({ downloadPath, setDownloadPath, disabled }) {
     }
   };
 
+  const handleOpenFolder = async () => {
+    if (window.electronAPI && downloadPath) {
+      try {
+        const result = await window.electronAPI.openFolder(downloadPath);
+        if (!result.success) {
+          console.error('Failed to open folder:', result.error);
+        }
+      } catch (error) {
+        console.error('Error opening folder:', error);
+      }
+    }
+  };
+
   const displayPath = downloadPath 
     ? (downloadPath.length > 50 ? `...${downloadPath.slice(-47)}` : downloadPath)
     : 'No folder selected - click Browse to choose';
@@ -29,13 +42,25 @@ function LocationSection({ downloadPath, setDownloadPath, disabled }) {
             {displayPath}
           </div>
         </div>
-        <button 
-          className="browse-btn"
-          onClick={handleBrowseFolder}
-          disabled={disabled}
-        >
-          📂 Browse
-        </button>
+        <div className="path-buttons">
+          <button 
+            className="browse-btn"
+            onClick={handleBrowseFolder}
+            disabled={disabled}
+          >
+            📂 Browse
+          </button>
+          {downloadPath && (
+            <button 
+              className="open-folder-btn"
+              onClick={handleOpenFolder}
+              disabled={disabled}
+              title="Open download folder"
+            >
+              📁 Open
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

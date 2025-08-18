@@ -339,6 +339,7 @@ function App() {
             queue={queue}
             onRetry={handleRetryQueueItem}
             onRemove={handleRemoveQueueItem}
+            downloadPath={downloadPath}
           />
         )}
 
