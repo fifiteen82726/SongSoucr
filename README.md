@@ -56,7 +56,7 @@ cd tidalDownloader
 **Use this for production releases and distribution**
 
 ```bash
-./build-final.sh
+./scripts/build-final.sh
 ```
 
 **What it creates:**
@@ -92,14 +92,14 @@ yarn dmg
 
 | Script | Size | User Requirements | Build Time | Use Case |
 |--------|------|------------------|------------|----------|
-| `./build-final.sh` | 144MB | **None** | ~3 min | **Production release** |
-| `./build-simple.sh` | 112MB | Python + FFmpeg | ~1 min | Development/technical users |
-| `./build-standalone-complete.sh` | 144MB | **None** | ~4 min | Advanced standalone options |
-| `./build-mac-app.sh` | 144MB | **None** | ~4 min | Alternative packaging method |
+| `./scripts/build-final.sh` | 144MB | **None** | ~3 min | **Production release** |
+| `./scripts/build-simple.sh` | 112MB | Python + FFmpeg | ~1 min | Development/technical users |
+| `./scripts/build-standalone-complete.sh` | 144MB | **None** | ~4 min | Advanced standalone options |
+| `./scripts/build-mac-app.sh` | 144MB | **None** | ~4 min | Alternative packaging method |
 
 **Quick Decision Guide:**
-- 🎯 **Releasing to users?** → `./build-final.sh`
-- 🔧 **Testing changes?** → `./build-simple.sh`
+- 🎯 **Releasing to users?** → `./scripts/build-final.sh`
+- 🔧 **Testing changes?** → `./scripts/build-simple.sh`
 - 🛠️ **Development work?** → `yarn dmg`
 
 ## Testing the App
@@ -108,23 +108,23 @@ yarn dmg
 
 ```bash
 # Test everything (backend + frontend + integration)
-./test-everything.sh
+./scripts/test-everything.sh
 
 # Test UI with manual interaction (30 second window)
-./test-ui.sh
+./scripts/test-ui.sh
 
 # Test backend Python script only
-./test.sh
+./scripts/test.sh
 
 # Test standalone app components
-./test-standalone.sh
+./scripts/test-standalone.sh
 ```
 
 ### 🎯 Manual Testing Steps
 
 1. **Launch Test**:
    ```bash
-   ./test-everything.sh
+   ./scripts/test-everything.sh
    ```
 
 2. **UI Testing**:
@@ -135,7 +135,7 @@ yarn dmg
 
 3. **Verify Components**:
    ```bash
-   ./test-standalone.sh  # Verify all binaries work
+   ./scripts/test-standalone.sh  # Verify all binaries work
    ```
 
 ### 📊 Test Output Example
@@ -159,10 +159,10 @@ cd tidal-electron-app
 yarn electron-dev
 
 # Run tests after changes
-./test-everything.sh
+./scripts/test-everything.sh
 
 # Build for distribution
-./build-final.sh
+./scripts/build-final.sh
 ```
 
 ### 🐛 Debugging
@@ -175,8 +175,8 @@ yarn electron-dev
 1. **Frontend**: Edit files in `tidal-electron-app/src/`
 2. **Backend**: Edit `tidal_downloader.py`
 3. **Electron**: Edit files in `tidal-electron-app/electron/`
-4. **Test**: Run `./test-everything.sh`
-5. **Build**: Run `./build-final.sh`
+4. **Test**: Run `./scripts/test-everything.sh`
+5. **Build**: Run `./scripts/build-final.sh`
 
 ## Architecture
 
@@ -232,7 +232,7 @@ python3 tidal_downloader.py -o ~/Downloads "https://tidal.com/browse/track/44050
 ```bash
 # Clean and rebuild
 rm -rf tidal-electron-app/dist tidal-electron-app/build
-./build-final.sh
+./scripts/build-final.sh
 ```
 
 **Tests Fail:**
@@ -250,7 +250,7 @@ brew install ffmpeg  # For development only
 ### 🔍 Debug Mode
 ```bash
 # Run tests with verbose output
-ELECTRON_ENABLE_LOGGING=1 ./test-everything.sh
+ELECTRON_ENABLE_LOGGING=1 ./scripts/test-everything.sh
 
 # Check detailed logs
 tail -f /tmp/tidal_downloader.log
@@ -260,15 +260,15 @@ tail -f /tmp/tidal_downloader.log
 
 1. Fork the repository
 2. Create feature branch: `git checkout -b feature-name`
-3. Make changes and test: `./test-everything.sh`
+3. Make changes and test: `./scripts/test-everything.sh`
 4. Commit: `git commit -m "Add feature"`
 5. Push and create Pull Request
 
 ## Release Process
 
-1. **Test**: `./test-everything.sh`
-2. **Build**: `./build-final.sh`
-3. **Verify**: `./test-standalone.sh`
+1. **Test**: `./scripts/test-everything.sh`
+2. **Build**: `./scripts/build-final.sh`
+3. **Verify**: `./scripts/test-standalone.sh`
 4. **Distribute**: Upload DMG files
 
 ## App Updates & Upgrades
@@ -317,7 +317,7 @@ const latest = await response.json();
 
 **🚀 Automated Release (Recommended):**
 ```bash
-./release.sh
+./scripts/release.sh
 ```
 This interactive script will:
 - Prompt for release type (patch/minor/major)
@@ -333,10 +333,10 @@ This interactive script will:
 yarn version --new-version patch  # or minor/major
 
 # 2. Test the new version
-./test-everything.sh
+./scripts/test-everything.sh
 
 # 3. Build release
-./build-final.sh
+./scripts/build-final.sh
 
 # 4. Create GitHub release
 git tag v1.0.1
@@ -376,9 +376,9 @@ gh release create v1.0.1 \
 
 **Before Release:**
 - [ ] Version number updated in `package.json`
-- [ ] All tests pass: `./test-everything.sh`
-- [ ] Standalone build works: `./build-final.sh`
-- [ ] Components verified: `./test-standalone.sh`
+- [ ] All tests pass: `./scripts/test-everything.sh`
+- [ ] Standalone build works: `./scripts/build-final.sh`
+- [ ] Components verified: `./scripts/test-standalone.sh`
 - [ ] Release notes written
 - [ ] Git tag created
 
