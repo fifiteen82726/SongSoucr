@@ -231,11 +231,29 @@ function downloadSong(queueItem) {
     console.log('Command args:', args);
     console.log('About to spawn process with:', { executablePath, args });
     
+    // Check if executable exists and has permissions
+    if (!isDev && !fs.existsSync(executablePath)) {
+      reject(new Error(`Executable not found: ${executablePath}`));
+      return;
+    }
+
+    // Set executable permissions on macOS
+    if (!isDev) {
+      try {
+        fs.chmodSync(executablePath, 0o755);
+        console.log('Set executable permissions for:', executablePath);
+      } catch (permError) {
+        console.warn('Could not set permissions:', permError.message);
+      }
+    }
+
     let downloadProcess;
     try {
       downloadProcess = spawn(executablePath, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env }
+        env: { ...process.env },
+        shell: false,
+        detached: false
       });
       
       console.log('Process spawned successfully, PID:', downloadProcess.pid);
@@ -506,8 +524,37 @@ ipcMain.handle('start-download', async (event, { url, format, downloadPath }) =>
     
     console.log('Starting download with args:', args);
     
+    // Check if executable exists and has permissions
+    if (!isDev && !fs.existsSync(executablePath)) {
+      reject(new Error(`Executable not found: ${executablePath}`));
+      return;
+    }
+
+    // Set executable permissions on macOS
+    if (!isDev) {
+      try {
+        fs.chmodSync(executablePath, 0o755);
+        console.log('Set executable permissions for start-download:', executablePath);
+      } catch (permError) {
+        console.warn('Could not set permissions for start-download:', permError.message);
+      }
+    }
+    
     // Spawn Python process
-    downloadProcess = spawn(executablePath, args);
+    try {
+      downloadProcess = spawn(executablePath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+        shell: false,
+        detached: false
+      });
+      
+      console.log('Start-download process spawned successfully, PID:', downloadProcess.pid);
+    } catch (spawnError) {
+      console.error('Failed to spawn start-download process:', spawnError);
+      reject(new Error(`Failed to start download process: ${spawnError.message}`));
+      return;
+    }
     
     let output = '';
     let errorOutput = '';
