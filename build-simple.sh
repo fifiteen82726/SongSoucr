@@ -7,13 +7,13 @@ echo "=============================================="
 cd "$(dirname "$0")/tidal-electron-app"
 
 echo "📦 Installing dependencies..."
-npm install
+yarn install
 
 echo "🏗️  Building React app..."
-npm run build
+yarn build
 
 echo "🍎 Building macOS DMG..."
-npm run dmg
+yarn dmg
 
 if [ $? -eq 0 ]; then
     echo ""

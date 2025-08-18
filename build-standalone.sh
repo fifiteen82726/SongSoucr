@@ -55,10 +55,10 @@ log "✅ Python executable created: dist/tidal-downloader-backend"
 cd tidal-electron-app
 
 log "📦 Installing Node.js dependencies..."
-npm install
+yarn install
 
 log "🏗️  Building React frontend..."
-npm run build
+yarn build
 
 # Update main.js to use the standalone executable
 log "⚙️  Updating Electron to use standalone Python executable..."
@@ -125,7 +125,7 @@ console.log('✅ Updated package.json');
 "
 
 log "🍎 Building macOS app..."
-npm run dmg
+yarn dmg
 
 # Restore original main.js
 mv electron/main.js.backup electron/main.js

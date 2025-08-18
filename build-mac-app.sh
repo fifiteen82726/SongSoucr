@@ -48,10 +48,10 @@ python3 -c "import requests, pathlib" 2>/dev/null || {
 cd "$(dirname "$0")/tidal-electron-app"
 
 log "📦 Installing Node.js dependencies..."
-npm install
+yarn install
 
 log "🏗️  Building React app..."
-npm run build
+yarn build
 
 log "🐍 Creating Python bundle..."
 
@@ -146,7 +146,7 @@ console.log('✅ Updated package.json for Python bundle');
 "
 
 log "🍎 Building macOS DMG..."
-npm run dmg
+yarn dmg
 
 # Restore original main.js
 mv electron/main.js.backup electron/main.js

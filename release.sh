@@ -22,9 +22,9 @@ echo "📋 Current version: $CURRENT_VERSION"
 # Ask for release type
 echo ""
 echo "🔢 What type of release?"
-echo "1. Patch (bug fixes): $CURRENT_VERSION → $(npm version --dry-run patch 2>/dev/null | sed 's/v//')"
-echo "2. Minor (new features): $CURRENT_VERSION → $(npm version --dry-run minor 2>/dev/null | sed 's/v//')"  
-echo "3. Major (breaking changes): $CURRENT_VERSION → $(npm version --dry-run major 2>/dev/null | sed 's/v//')"
+echo "1. Patch (bug fixes): $CURRENT_VERSION → $(yarn version --no-git-tag-version --new-version patch --dry-run 2>/dev/null || echo 'patch')"
+echo "2. Minor (new features): $CURRENT_VERSION → $(yarn version --no-git-tag-version --new-version minor --dry-run 2>/dev/null || echo 'minor')"  
+echo "3. Major (breaking changes): $CURRENT_VERSION → $(yarn version --no-git-tag-version --new-version major --dry-run 2>/dev/null || echo 'major')"
 echo "4. Custom version"
 echo "5. Cancel"
 
@@ -61,11 +61,12 @@ log "📝 Updating version..."
 cd tidal-electron-app
 if [[ "$RELEASE_TYPE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     # Custom version
-    npm version "$RELEASE_TYPE" --no-git-tag-version
+    yarn version --no-git-tag-version --new-version "$RELEASE_TYPE"
     NEW_VERSION="$RELEASE_TYPE"
 else
     # Standard release type
-    NEW_VERSION=$(npm version "$RELEASE_TYPE" --no-git-tag-version | sed 's/v//')
+    yarn version --no-git-tag-version --new-version "$RELEASE_TYPE"
+    NEW_VERSION=$(node -p "require('./package.json').version")
 fi
 
 log "✅ Version updated to: $NEW_VERSION"

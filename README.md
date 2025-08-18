@@ -35,9 +35,14 @@ A professional macOS application for downloading music from Tidal with queue man
 ## Development Setup
 
 ### Prerequisites (Development Only)
-- Node.js and npm
+- Node.js and yarn (we use yarn for better performance and consistency)
 - Python 3 with pip
 - Git
+
+**Note**: This project uses yarn exclusively for package management. If you don't have yarn:
+```bash
+npm install -g yarn
+```
 
 ### Installation
 ```bash
@@ -69,9 +74,9 @@ cd tidalDownloader
 
 ```bash
 cd tidal-electron-app
-npm install
-npm run build
-npm run dmg
+yarn install
+yarn build
+yarn dmg
 ```
 
 **What it creates:**
@@ -95,7 +100,7 @@ npm run dmg
 **Quick Decision Guide:**
 - 🎯 **Releasing to users?** → `./build-final.sh`
 - 🔧 **Testing changes?** → `./build-simple.sh`
-- 🛠️ **Development work?** → `npm run dmg`
+- 🛠️ **Development work?** → `yarn dmg`
 
 ## Testing the App
 
@@ -151,7 +156,7 @@ npm run dmg
 ```bash
 # Start development environment
 cd tidal-electron-app
-npm run electron-dev
+yarn electron-dev
 
 # Run tests after changes
 ./test-everything.sh
@@ -274,7 +279,7 @@ Currently, the app doesn't have automatic updates. Here's how to implement them 
 #### Option 1: Electron-Updater (Recommended)
 ```bash
 # Install electron-updater
-npm install electron-updater
+yarn add electron-updater
 
 # Add to package.json
 "publish": {
@@ -325,7 +330,7 @@ This interactive script will:
 **📝 Manual Release:**
 ```bash
 # 1. Update version in package.json
-npm version patch  # or minor/major
+yarn version --new-version patch  # or minor/major
 
 # 2. Test the new version
 ./test-everything.sh

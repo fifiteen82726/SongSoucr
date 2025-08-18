@@ -48,11 +48,11 @@ log "🔧 Building Electron app..."
 cd tidal-electron-app
 
 # Build React app
-npm install
-npm run build
+yarn install
+yarn build
 
 # Build macOS DMG
-npm run dmg
+yarn dmg
 
 cd ..
 

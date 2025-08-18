@@ -222,13 +222,13 @@ console.log('✅ Updated package.json for standalone build');
 
 # Step 5: Build the app
 log "📦 Installing Node.js dependencies..."
-npm install
+yarn install
 
 log "🏗️  Building React app..."
-npm run build
+yarn build
 
 log "🍎 Building standalone macOS app..."
-npm run dmg
+yarn dmg
 
 # Restore original main.js
 mv electron/main.js.original electron/main.js
