@@ -48,21 +48,24 @@ cd tidalDownloader
 ## Building the App
 
 ### 🚀 Complete Standalone Build (Recommended)
-Creates a fully self-contained app with zero user requirements:
+**Use this for production releases and distribution**
 
 ```bash
 ./build-final.sh
 ```
 
-**What this does:**
-- Creates standalone Python executable (PyInstaller)
-- Downloads and bundles FFmpeg binary
-- Builds React frontend
-- Packages everything into macOS DMG
-- Results in 144MB app with zero dependencies
+**What it creates:**
+- 144MB DMG with ZERO user dependencies
+- Bundled Python runtime (7MB PyInstaller executable)
+- Bundled FFmpeg binary (75MB)
+- Works on any Mac without installations
+
+**Best for:** Final releases, non-technical users, distribution
+
+---
 
 ### 🏗️ Development Build
-For testing during development:
+**Use this during active development**
 
 ```bash
 cd tidal-electron-app
@@ -71,15 +74,28 @@ npm run build
 npm run dmg
 ```
 
-### 📦 Alternative Build Scripts
+**What it creates:**
+- 112MB DMG (smaller, faster build)
+- Includes Python script (not executable)
+- Requires user to have Python 3 + FFmpeg installed
 
-```bash
-# Quick backend-only test
-./build-simple.sh           # Requires Python/FFmpeg on user's Mac
+**Best for:** Development, testing changes, technical users
 
-# Full standalone with custom options  
-./build-standalone-complete.sh   # Advanced standalone build
-```
+---
+
+### 📦 Build Script Comparison
+
+| Script | Size | User Requirements | Build Time | Use Case |
+|--------|------|------------------|------------|----------|
+| `./build-final.sh` | 144MB | **None** | ~3 min | **Production release** |
+| `./build-simple.sh` | 112MB | Python + FFmpeg | ~1 min | Development/technical users |
+| `./build-standalone-complete.sh` | 144MB | **None** | ~4 min | Advanced standalone options |
+| `./build-mac-app.sh` | 144MB | **None** | ~4 min | Alternative packaging method |
+
+**Quick Decision Guide:**
+- 🎯 **Releasing to users?** → `./build-final.sh`
+- 🔧 **Testing changes?** → `./build-simple.sh`
+- 🛠️ **Development work?** → `npm run dmg`
 
 ## Testing the App
 
@@ -249,6 +265,130 @@ tail -f /tmp/tidal_downloader.log
 2. **Build**: `./build-final.sh`
 3. **Verify**: `./test-standalone.sh`
 4. **Distribute**: Upload DMG files
+
+## App Updates & Upgrades
+
+### 🔄 Automatic Updates (Future Enhancement)
+Currently, the app doesn't have automatic updates. Here's how to implement them in the future:
+
+#### Option 1: Electron-Updater (Recommended)
+```bash
+# Install electron-updater
+npm install electron-updater
+
+# Add to package.json
+"publish": {
+  "provider": "github",
+  "owner": "your-username",
+  "repo": "tidal-downloader"
+}
+```
+
+**Implementation steps:**
+1. Add update checking to `electron/main.js`
+2. Configure GitHub Releases for auto-update
+3. Code signing for macOS (required for auto-updates)
+4. Add update UI notifications
+
+#### Option 2: Simple Version Check
+```javascript
+// Check latest version from GitHub API
+const response = await fetch('https://api.github.com/repos/owner/repo/releases/latest');
+const latest = await response.json();
+// Compare with current version, show update notification
+```
+
+### 📦 Manual Updates (Current Method)
+
+**For Users:**
+1. **Check for Updates**: Visit releases page or check app version
+2. **Download**: Get latest DMG file
+3. **Replace**: Drag new app to Applications (overwrite old one)
+4. **Launch**: New version ready to use
+
+**For Developers:**
+
+#### Creating a New Release:
+
+**🚀 Automated Release (Recommended):**
+```bash
+./release.sh
+```
+This interactive script will:
+- Prompt for release type (patch/minor/major)
+- Update version numbers
+- Run all tests
+- Build standalone app
+- Create git tag
+- Provide GitHub release command
+
+**📝 Manual Release:**
+```bash
+# 1. Update version in package.json
+npm version patch  # or minor/major
+
+# 2. Test the new version
+./test-everything.sh
+
+# 3. Build release
+./build-final.sh
+
+# 4. Create GitHub release
+git tag v1.0.1
+git push origin v1.0.1
+
+# 5. Upload DMG files to GitHub release
+```
+
+#### Version Numbering:
+- **Patch** (1.0.1): Bug fixes, small improvements
+- **Minor** (1.1.0): New features, UI changes
+- **Major** (2.0.0): Breaking changes, complete rewrites
+
+### 🚀 Release Distribution Options
+
+#### Option 1: GitHub Releases (Free)
+```bash
+# Create release with DMG files
+gh release create v1.0.1 \
+  "dist/Tidal Downloader-1.0.1.dmg" \
+  "dist/Tidal Downloader-1.0.1-arm64.dmg" \
+  --title "Tidal Downloader v1.0.1" \
+  --notes "Bug fixes and improvements"
+```
+
+#### Option 2: Direct Download (Simple)
+- Host DMG files on your own server
+- Provide direct download links
+- No GitHub account required for users
+
+#### Option 3: Mac App Store (Future)
+- Code signing certificate required ($99/year)
+- App Store review process
+- Automatic updates through App Store
+
+### 📋 Update Checklist Template
+
+**Before Release:**
+- [ ] Version number updated in `package.json`
+- [ ] All tests pass: `./test-everything.sh`
+- [ ] Standalone build works: `./build-final.sh`
+- [ ] Components verified: `./test-standalone.sh`
+- [ ] Release notes written
+- [ ] Git tag created
+
+**Release Steps:**
+- [ ] Create GitHub release
+- [ ] Upload Intel DMG
+- [ ] Upload Apple Silicon DMG
+- [ ] Test download links
+- [ ] Announce update (social media, etc.)
+
+**Future Enhancement Ideas:**
+- [ ] In-app update notifications
+- [ ] Automatic background downloads
+- [ ] Rollback capability
+- [ ] Beta/stable release channels
 
 ## Support
 
