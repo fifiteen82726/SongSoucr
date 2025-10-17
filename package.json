@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "electron-is-dev": "^3.0.1",
+    "os-name": "^6.1.0"
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11"
+  }
+}

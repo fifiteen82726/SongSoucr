@@ -58,10 +58,20 @@ body {
   font-size: 1.2rem;
   font-weight: 600;
   color: #333;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.url-help {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 1rem;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e1e5e9;
 }
 
 .url-input {

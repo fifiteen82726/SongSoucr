@@ -195,9 +195,10 @@ async function processQueue() {
 function downloadSong(queueItem) {
   return new Promise((resolve, reject) => {
     // Use standalone executable in production, Python script in development
+    const arch = os.arch();
     const executablePath = isDev 
       ? 'python3'
-      : path.join(process.resourcesPath, 'binaries/tidal-downloader');
+      : path.join(process.resourcesPath, `binaries/tidal-downloader-${arch}`);
     
     // Verify executable exists
     console.log('Queue download - Executable path:', executablePath);
@@ -206,7 +207,8 @@ function downloadSong(queueItem) {
     
     // Set FFmpeg path for the executable
     if (!isDev) {
-      const ffmpegPath = path.join(process.resourcesPath, 'binaries/ffmpeg');
+      const arch = os.arch();
+      const ffmpegPath = path.join(process.resourcesPath, `binaries/ffmpeg-${arch}`);
       const ffmpegDir = path.dirname(ffmpegPath);
       process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
       console.log('Queue download - FFmpeg path:', ffmpegPath);
@@ -499,13 +501,15 @@ ipcMain.handle('retry-download', async (event, itemId) => {
 ipcMain.handle('start-download', async (event, { url, format, downloadPath }) => {
   return new Promise((resolve, reject) => {
     // Use standalone executable in production, Python script in development
+    const arch = os.arch();
     const executablePath = isDev 
       ? 'python3'
-      : path.join(process.resourcesPath, 'binaries/tidal-downloader');
+      : path.join(process.resourcesPath, `binaries/tidal-downloader-${arch}`);
     
     // Set FFmpeg path for the executable
     if (!isDev) {
-      const ffmpegPath = path.join(process.resourcesPath, 'binaries/ffmpeg');
+      const arch = os.arch();
+      const ffmpegPath = path.join(process.resourcesPath, `binaries/ffmpeg-${arch}`);
       const ffmpegDir = path.dirname(ffmpegPath);
       process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
     }

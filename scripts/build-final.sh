@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Get the absolute path to the project root (one level up from scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
 echo "🚀 Building COMPLETELY STANDALONE Tidal Downloader"
 echo "=================================================="
 echo ""
@@ -9,6 +14,8 @@ echo "✅ All Python dependencies included"
 echo "✅ FFmpeg binary bundled"
 echo "✅ No external installations needed"
 echo ""
+echo "Working from: $PROJECT_ROOT"
+echo ""
 
 # Function to log messages
 log() {
@@ -17,7 +24,7 @@ log() {
 
 # Check if we're in the right directory
 if [ ! -f "tidal_downloader.py" ]; then
-    echo "❌ Please run this script from the tidalDownloader directory"
+    echo "❌ Could not find tidal_downloader.py in project root: $PROJECT_ROOT"
     exit 1
 fi
 
@@ -39,9 +46,9 @@ if [ ! -f "binaries/ffmpeg" ]; then
     log "Downloading FFmpeg from evermeet.cx..."
     curl -L "https://evermeet.cx/ffmpeg/ffmpeg-6.0.zip" -o /tmp/ffmpeg.zip
     cd /tmp && unzip -q ffmpeg.zip
-    cp ffmpeg "$(dirname "$0")/binaries/"
+    cp ffmpeg "$PROJECT_ROOT/binaries/"
     rm ffmpeg.zip ffmpeg
-    cd "$(dirname "$0")"
+    cd "$PROJECT_ROOT"
     log "✅ FFmpeg downloaded and ready"
 else
     log "✅ FFmpeg binary already exists"

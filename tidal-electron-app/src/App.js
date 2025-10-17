@@ -149,12 +149,12 @@ function App() {
 
   const validateInputs = () => {
     if (!url.trim()) {
-      setStatus('❌ Please enter a Tidal URL');
+      setStatus('❌ Please enter a music URL');
       return false;
     }
 
-    if (!url.includes('tidal.com')) {
-      setStatus('❌ Please enter a valid Tidal URL');
+    if (!url.includes('tidal.com') && !url.includes('music.amazon.com')) {
+      setStatus('❌ Please enter a valid Tidal or Amazon Music URL');
       return false;
     }
 
@@ -268,7 +268,7 @@ function App() {
       <div className="container">
         <div className="title">
           <span className="title-emoji">🎵</span>
-          TIDAL DOWNLOADER
+          MUSIC DOWNLOADER
         </div>
 
         {/* Tab Navigation */}

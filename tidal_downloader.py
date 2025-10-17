@@ -23,7 +23,7 @@ logging.basicConfig(
     ]
 )
 
-class TidalDownloader:
+class MusicDownloader:
     def __init__(self, base_url="https://us.doubledouble.top"):
         self.base_url = base_url
         self.session = requests.Session()
@@ -37,15 +37,62 @@ class TidalDownloader:
             'Sec-Fetch-Site': 'same-origin',
         })
 
+    def _detect_service(self, url):
+        """Detect which music service the URL belongs to"""
+        if 'tidal.com' in url:
+            return 'tidal'
+        elif 'music.amazon.com' in url:
+            return 'amazon'
+        else:
+            return None
+
     def _clean_tidal_url(self, tidal_url):
         """Clean Tidal URL by removing tracking parameters"""
         parsed = urllib.parse.urlparse(tidal_url)
+
+        # Remove query parameters that are tracking/user-specific
+        query_params = urllib.parse.parse_qs(parsed.query)
+
+        # Keep only essential parameters, remove tracking ones like 'u'
+        allowed_params = {}  # For now, remove all query parameters
+
+        # Clean the path - remove trailing '/u' or '/u/' if present
+        clean_path = parsed.path
+        if clean_path.endswith('/u'):
+            clean_path = clean_path[:-2]
+        elif clean_path.endswith('/u/'):
+            clean_path = clean_path[:-3]
+
+        # Reconstruct the URL without tracking parameters
+        clean_query = urllib.parse.urlencode(allowed_params, doseq=True)
+        clean_url = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            clean_path,
+            parsed.params,
+            clean_query,
+            parsed.fragment
+        ))
+
+        logging.info(f"Cleaned Tidal URL: {tidal_url} -> {clean_url}")
+
+        return clean_url
+
+    def _clean_amazon_url(self, amazon_url):
+        """Clean Amazon Music URL by removing tracking parameters"""
+        parsed = urllib.parse.urlparse(amazon_url)
         
         # Remove query parameters that are tracking/user-specific
         query_params = urllib.parse.parse_qs(parsed.query)
         
-        # Keep only essential parameters, remove tracking ones like 'u'
-        allowed_params = {}  # For now, remove all query parameters
+        # Keep only essential parameters for Amazon Music
+        allowed_params = {}
+        if 'marketplaceId' in query_params:
+            allowed_params['marketplaceId'] = query_params['marketplaceId']
+        if 'musicTerritory' in query_params:
+            allowed_params['musicTerritory'] = query_params['musicTerritory']
+        if 'trackAsin' in query_params:
+            allowed_params['trackAsin'] = query_params['trackAsin']
         
         # Reconstruct the URL without tracking parameters
         clean_query = urllib.parse.urlencode(allowed_params, doseq=True)
@@ -60,11 +107,24 @@ class TidalDownloader:
         
         return clean_url
 
-    def download(self, tidal_url, format_type="flac", output_dir=".", convert_to_mp3=True, extract_zip=True):
-        """Download music from Tidal URL"""
+    def download(self, url, format_type="flac", output_dir=".", convert_to_mp3=True, extract_zip=True):
+        """Download music from supported streaming services"""
+        # Detect the service
+        service = self._detect_service(url)
+        if not service:
+            print("❌ Unsupported URL. Please provide a Tidal or Amazon Music URL")
+            return False
+        
         # Clean the URL by removing tracking parameters
-        clean_url = self._clean_tidal_url(tidal_url)
+        if service == 'tidal':
+            clean_url = self._clean_tidal_url(url)
+            print(f"🎵 Tidal download detected")
+        elif service == 'amazon':
+            clean_url = self._clean_amazon_url(url)
+            print(f"🎵 Amazon Music download detected")
+        
         logging.info(f"Starting download for: {clean_url}")
+        logging.info(f"Service: {service}")
         logging.info(f"Format: {format_type}")
         logging.info(f"Output dir: {output_dir}")
         logging.info(f"Convert to MP3: {convert_to_mp3}")
@@ -155,29 +215,39 @@ class TidalDownloader:
         for attempt in range(max_attempts):
             time.sleep(2)
             print(f"Checking status... (attempt {attempt + 1}/{max_attempts})")
-            
+            logging.info(f"Polling attempt {attempt + 1}/{max_attempts}")
+
             try:
                 response = self.session.get(f"{self.base_url}/dl/{download_id}")
+                logging.debug(f"Poll response status code: {response.status_code}")
+                logging.debug(f"Poll response headers: {dict(response.headers)}")
+                logging.debug(f"Poll response text (first 500 chars): {response.text[:500]}")
                 response.raise_for_status()
-                
+
                 data = response.json()
+                logging.debug(f"Parsed JSON data: {data}")
+
                 status = data.get('status', '')
                 friendly_status = data.get('friendlyStatus', status)
                 print(f"Status: {friendly_status}")
-                
+                logging.info(f"Download status: {status}, friendly: {friendly_status}")
+
                 if status == 'done':
                     if 'url' in data:
+                        logging.info(f"Download complete, file URL: {data['url']}")
                         zip_path = self._download_file(data['url'], output_dir)
                         return zip_path if zip_path else False
                     else:
+                        logging.error("Download marked as done but no URL provided")
                         print("Download marked as done but no URL provided")
                         return False
                 elif status == 'error':
                     error_msg = data.get('error', data.get('friendlyStatus', 'Unknown error'))
                     message = data.get('message', '')
-                    
+
+                    logging.error(f"Download failed: {error_msg}, message: {message}")
                     print(f"❌ Download failed: {error_msg}")
-                    
+
                     if 'extractor error' in message.lower():
                         print("🔧 This is a service-side issue with extracting this specific track.")
                         print("💡 Try:")
@@ -186,16 +256,23 @@ class TidalDownloader:
                         print("   • Check if the track is available in your region")
                     elif message:
                         print(f"Details: {message}")
-                        
+
                     return False
-                    
+
             except requests.RequestException as e:
+                logging.error(f"Request error polling status: {e}")
                 print(f"Error polling status: {e}")
                 continue
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logging.error(f"JSON decode error: {e}, response text: {response.text[:500]}")
                 print("Invalid response format")
                 continue
-                
+            except Exception as e:
+                logging.error(f"Unexpected error in polling: {e}", exc_info=True)
+                print(f"Unexpected error: {e}")
+                continue
+
+        logging.error("Timeout waiting for download completion")
         print("Timeout waiting for download completion")
         return False
 
@@ -205,16 +282,23 @@ class TidalDownloader:
             file_url = f"{self.base_url}/{file_url[2:]}"
         elif file_url.startswith('/'):
             file_url = f"{self.base_url}{file_url}"
-            
+
         print(f"Downloading file from: {file_url}")
-        
+        logging.info(f"Downloading file from: {file_url}")
+
         try:
+            # Ensure output directory exists
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Ensured output directory exists: {output_dir_path}")
+
             response = self.session.get(file_url, stream=True)
             response.raise_for_status()
-            
+
             # Get filename from Content-Disposition or URL
             filename = self._get_filename(response, file_url)
-            output_path = Path(output_dir) / filename
+            output_path = output_dir_path / filename
+            logging.info(f"Output path: {output_path}")
             
             # Download with progress
             total_size = int(response.headers.get('content-length', 0))
@@ -376,8 +460,8 @@ class TidalDownloader:
         print("✅ Download completed successfully!")
 
 def main():
-    parser = argparse.ArgumentParser(description='Download music from Tidal using doubledouble.top')
-    parser.add_argument('url', help='Tidal URL to download')
+    parser = argparse.ArgumentParser(description='Download music from Tidal and Amazon Music using doubledouble.top')
+    parser.add_argument('url', help='Tidal or Amazon Music URL to download')
     parser.add_argument('-f', '--format', default='flac', choices=['ogg', 'mp3', 'flac'],
                        help='Audio format (default: flac)')
     parser.add_argument('-o', '--output', default='.', 
@@ -391,12 +475,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate Tidal URL
-    if 'tidal.com' not in args.url:
-        print("Error: Please provide a valid Tidal URL")
+    # Validate URL
+    if 'tidal.com' not in args.url and 'music.amazon.com' not in args.url:
+        print("Error: Please provide a valid Tidal or Amazon Music URL")
         sys.exit(1)
     
-    downloader = TidalDownloader(args.base_url)
+    downloader = MusicDownloader(args.base_url)
     success = downloader.download(
         args.url, 
         args.format, 

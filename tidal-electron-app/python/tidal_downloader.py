@@ -12,7 +12,7 @@ import os
 import shutil
 from pathlib import Path
 
-class TidalDownloader:
+class MusicDownloader:
     def __init__(self, base_url="https://us.doubledouble.top"):
         self.base_url = base_url
         self.session = requests.Session()
@@ -25,6 +25,15 @@ class TidalDownloader:
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
         })
+
+    def _detect_service(self, url):
+        """Detect which music service the URL belongs to"""
+        if 'tidal.com' in url:
+            return 'tidal'
+        elif 'music.amazon.com' in url:
+            return 'amazon'
+        else:
+            return None
 
     def _clean_tidal_url(self, tidal_url):
         """Clean Tidal URL by removing tracking parameters"""
@@ -49,10 +58,51 @@ class TidalDownloader:
         
         return clean_url
 
-    def download(self, tidal_url, format_type="flac", output_dir=".", convert_to_mp3=True, extract_zip=True):
-        """Download music from Tidal URL"""
+    def _clean_amazon_url(self, amazon_url):
+        """Clean Amazon Music URL by removing tracking parameters"""
+        parsed = urllib.parse.urlparse(amazon_url)
+        
+        # Remove query parameters that are tracking/user-specific
+        query_params = urllib.parse.parse_qs(parsed.query)
+        
+        # Keep only essential parameters for Amazon Music
+        allowed_params = {}
+        if 'marketplaceId' in query_params:
+            allowed_params['marketplaceId'] = query_params['marketplaceId']
+        if 'musicTerritory' in query_params:
+            allowed_params['musicTerritory'] = query_params['musicTerritory']
+        if 'trackAsin' in query_params:
+            allowed_params['trackAsin'] = query_params['trackAsin']
+        
+        # Reconstruct the URL without tracking parameters
+        clean_query = urllib.parse.urlencode(allowed_params, doseq=True)
+        clean_url = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            clean_query,
+            parsed.fragment
+        ))
+        
+        return clean_url
+
+    def download(self, url, format_type="flac", output_dir=".", convert_to_mp3=True, extract_zip=True):
+        """Download music from supported streaming services"""
+        # Detect the service
+        service = self._detect_service(url)
+        if not service:
+            print("❌ Unsupported URL. Please provide a Tidal or Amazon Music URL")
+            return False
+        
         # Clean the URL by removing tracking parameters
-        clean_url = self._clean_tidal_url(tidal_url)
+        if service == 'tidal':
+            clean_url = self._clean_tidal_url(url)
+            print(f"🎵 Tidal download detected")
+        elif service == 'amazon':
+            clean_url = self._clean_amazon_url(url)
+            print(f"🎵 Amazon Music download detected")
+        
         print(f"Starting download for: {clean_url}")
         print(f"Format: {format_type}")
         
@@ -80,9 +130,27 @@ class TidalDownloader:
             zip_path = self._poll_for_completion(download_id, output_dir)
             if not zip_path:
                 return False
-                
-            # Step 3: Extract and convert if requested
-            if extract_zip:
+
+            # Step 3: Handle conversion for direct downloads or ZIP files
+            file_path = Path(zip_path)
+
+            # Check if we got a direct audio file (not a ZIP)
+            if file_path.suffix.lower() in ['.flac', '.ogg', '.wav', '.m4a', '.mp3']:
+                print(f"Direct audio file detected: {file_path}")
+                if convert_to_mp3 and file_path.suffix.lower() != '.mp3':
+                    print(f"Converting direct file to MP3...")
+                    mp3_files = self._convert_to_mp3([str(file_path)], output_dir)
+                    if mp3_files:
+                        # Remove original file after successful conversion
+                        try:
+                            os.remove(file_path)
+                            print(f"Removed original file: {file_path.name}")
+                        except Exception as e:
+                            print(f"Could not remove original file: {e}")
+                elif not convert_to_mp3:
+                    print(f"Keeping original format: {file_path.suffix}")
+            elif extract_zip:
+                # Handle ZIP files as before
                 extracted_files = self._extract_zip(zip_path, output_dir)
                 if convert_to_mp3 and extracted_files:
                     mp3_files = self._convert_to_mp3(extracted_files, output_dir)
@@ -95,7 +163,7 @@ class TidalDownloader:
                             print(f"Removed: {Path(zip_path).name}")
                     except Exception as e:
                         print(f"Could not remove ZIP file: {e}")
-                    
+
             return True
                 
         except requests.RequestException as e:
@@ -205,16 +273,31 @@ class TidalDownloader:
 
     def _get_filename(self, response, fallback_url):
         """Extract filename from response or URL"""
+        import urllib.parse
+
         # Try Content-Disposition header
         cd = response.headers.get('content-disposition', '')
         if 'filename=' in cd:
-            filename = cd.split('filename=')[1].strip('"\'')
+            # Handle both regular filename and filename* (RFC 5987)
+            if "filename*=UTF-8''" in cd:
+                # Extract UTF-8 encoded filename
+                filename = cd.split("filename*=UTF-8''")[1].split(';')[0]
+                filename = urllib.parse.unquote(filename)
+            else:
+                # Regular filename
+                filename = cd.split('filename=')[1].split(';')[0].strip('"\'')
+                # Remove any HTTP header artifacts
+                if '"; filename*=' in filename:
+                    filename = filename.split('"; filename*=')[0]
+
+            # Clean up any remaining artifacts and decode properly
+            filename = filename.replace('"', '').replace("'", '').strip()
             return filename
-        
+
         # Fall back to URL-based name
         if fallback_url.endswith('.zip'):
             return Path(fallback_url).name
-        
+
         # Default filename
         return "download.zip"
     
@@ -316,8 +399,8 @@ class TidalDownloader:
                 print(f"  ✅ {mp3_path.name} ({mp3_path.stat().st_size / (1024*1024):.1f}MB)")
 
 def main():
-    parser = argparse.ArgumentParser(description='Download music from Tidal using doubledouble.top')
-    parser.add_argument('url', help='Tidal URL to download')
+    parser = argparse.ArgumentParser(description='Download music from Tidal and Amazon Music using doubledouble.top')
+    parser.add_argument('url', help='Tidal or Amazon Music URL to download')
     parser.add_argument('-f', '--format', default='flac', choices=['ogg', 'mp3', 'flac'],
                        help='Audio format (default: flac)')
     parser.add_argument('-o', '--output', default='.', 
@@ -331,12 +414,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate Tidal URL
-    if 'tidal.com' not in args.url:
-        print("Error: Please provide a valid Tidal URL")
+    # Validate URL
+    if 'tidal.com' not in args.url and 'music.amazon.com' not in args.url:
+        print("Error: Please provide a valid Tidal or Amazon Music URL")
         sys.exit(1)
     
-    downloader = TidalDownloader(args.base_url)
+    downloader = MusicDownloader(args.base_url)
     success = downloader.download(
         args.url, 
         args.format, 
