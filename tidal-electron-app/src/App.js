@@ -6,6 +6,7 @@ import ProgressSection from './components/ProgressSection';
 import DownloadButton from './components/DownloadButton';
 import FailedDownloads from './components/FailedDownloads';
 import QueueSection from './components/QueueSection';
+import BatchImport from './components/BatchImport';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -280,6 +281,12 @@ function App() {
             📥 Add Songs
           </button>
           <button
+            className={`tab-button ${activeTab === 'batch' ? 'active' : ''}`}
+            onClick={() => setActiveTab('batch')}
+          >
+            📝 Batch Import
+          </button>
+          <button
             className={`tab-button ${activeTab === 'queue' ? 'active' : ''}`}
             onClick={() => setActiveTab('queue')}
           >
@@ -296,21 +303,21 @@ function App() {
         {/* Download Tab */}
         {activeTab === 'download' && (
           <>
-            <URLSection 
-              url={url} 
+            <URLSection
+              url={url}
               setUrl={setUrl}
               disabled={isAddingToQueue}
               loading={isAddingToQueue}
             />
 
-            <FormatSection 
-              format={format} 
+            <FormatSection
+              format={format}
               setFormat={setFormat}
               disabled={isAddingToQueue}
             />
 
-            <LocationSection 
-              downloadPath={downloadPath} 
+            <LocationSection
+              downloadPath={downloadPath}
               setDownloadPath={setDownloadPath}
               disabled={isAddingToQueue}
             />
@@ -331,6 +338,14 @@ function App() {
               </button>
             </div>
           </>
+        )}
+
+        {/* Batch Import Tab */}
+        {activeTab === 'batch' && (
+          <BatchImport
+            onBatchSearch={() => {}}
+            downloadPath={downloadPath}
+          />
         )}
 
         {/* Queue Tab */}

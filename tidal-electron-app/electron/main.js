@@ -666,11 +666,77 @@ ipcMain.handle('cancel-download', async () => {
   if (downloadProcess) {
     downloadProcess.kill();
     downloadProcess = null;
-    mainWindow.webContents.send('download-progress', { 
-      status: 'cancelled', 
-      message: 'Download cancelled by user' 
+    mainWindow.webContents.send('download-progress', {
+      status: 'cancelled',
+      message: 'Download cancelled by user'
     });
     return true;
   }
   return false;
+});
+
+// Batch search handler
+ipcMain.handle('batch-search', async (event, songList) => {
+  return new Promise((resolve, reject) => {
+    // Use Python 3 to run batch_search.py
+    const batchSearchScript = path.join(__dirname, '../../batch_search.py');
+
+    console.log(`Starting batch search for ${songList.length} songs`);
+    console.log('Batch search script path:', batchSearchScript);
+
+    // Check if script exists
+    if (!fs.existsSync(batchSearchScript)) {
+      reject(new Error(`Batch search script not found: ${batchSearchScript}`));
+      return;
+    }
+
+    // Spawn Python process with stdin
+    const pythonProcess = spawn('python3', [batchSearchScript, '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env }
+    });
+
+    let output = '';
+    let errorOutput = '';
+
+    // Send song list to stdin
+    const input = songList.join('\n');
+    pythonProcess.stdin.write(input);
+    pythonProcess.stdin.end();
+
+    pythonProcess.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+      const text = data.toString();
+      errorOutput += text;
+      console.log('Batch search stderr:', text);
+    });
+
+    pythonProcess.on('close', (code) => {
+      console.log(`Batch search process exited with code ${code}`);
+
+      if (code === 0) {
+        try {
+          const results = JSON.parse(output);
+          console.log(`Batch search completed: ${results.successful} successful, ${results.failed} failed`);
+          resolve(results);
+        } catch (parseError) {
+          console.error('Failed to parse batch search results:', parseError);
+          console.error('Output was:', output);
+          reject(new Error(`Failed to parse search results: ${parseError.message}`));
+        }
+      } else {
+        const errorMsg = errorOutput || `Process exited with code ${code}`;
+        console.error(`Batch search failed: ${errorMsg}`);
+        reject(new Error(errorMsg));
+      }
+    });
+
+    pythonProcess.on('error', (error) => {
+      console.error('Failed to start batch search process:', error);
+      reject(error);
+    });
+  });
 });

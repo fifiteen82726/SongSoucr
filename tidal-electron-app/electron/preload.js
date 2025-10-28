@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getQueue: () => ipcRenderer.invoke('get-queue'),
   removeFromQueue: (itemId) => ipcRenderer.invoke('remove-from-queue', itemId),
   retryDownload: (itemId) => ipcRenderer.invoke('retry-download', itemId),
+
+  // Batch search functionality
+  batchSearch: (songList) => ipcRenderer.invoke('batch-search', songList),
   
   // Progress updates
   onDownloadProgress: (callback) => {
