@@ -44,12 +44,30 @@ class MusicDownloader:
 
     def _detect_service(self, url):
         """Detect which music service the URL belongs to"""
-        if 'tidal.com' in url:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            host = parsed.netloc.lower()
+            path = parsed.path.lower()
+            query = parsed.query.lower()
+        except Exception:
+            host = url.lower()
+            path = ""
+            query = ""
+
+        if 'tidal.com' in host:
             return 'tidal'
-        elif 'music.amazon.com' in url:
+
+        if host == 'music.amazon.com' or host.endswith('.music.amazon.com'):
             return 'amazon'
-        else:
-            return None
+
+        if host == 'amazon.com' or host == 'www.amazon.com' or host.endswith('.amazon.com'):
+            if path.startswith('/music') or 'trackasin=' in query or 'musicterritory=' in query:
+                return 'amazon'
+
+        if 'music.amazon.com' in url.lower():
+            return 'amazon'
+
+        return None
 
     def _clean_tidal_url(self, tidal_url):
         """Clean Tidal URL by removing tracking parameters"""
@@ -506,12 +524,13 @@ def main():
     
     args = parser.parse_args()
     
+    downloader = MusicDownloader(args.base_url)
+
     # Validate URL
-    if 'tidal.com' not in args.url and 'music.amazon.com' not in args.url:
+    if not downloader._detect_service(args.url):
         print("Error: Please provide a valid Tidal or Amazon Music URL")
         sys.exit(1)
-    
-    downloader = MusicDownloader(args.base_url)
+
     success = downloader.download(
         args.url, 
         args.format, 

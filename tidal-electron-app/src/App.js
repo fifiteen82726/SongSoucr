@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import URLSection from './components/URLSection';
 import FormatSection from './components/FormatSection';
+import DownloadMethodSection from './components/DownloadMethodSection';
 import LocationSection from './components/LocationSection';
 import ProgressSection from './components/ProgressSection';
 import DownloadButton from './components/DownloadButton';
@@ -11,6 +12,7 @@ import BatchImport from './components/BatchImport';
 function App() {
   const [url, setUrl] = useState('');
   const [format, setFormat] = useState('mp3_320');
+  const [downloadMethod, setDownloadMethod] = useState('doubledouble');
   const [downloadPath, setDownloadPath] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -28,6 +30,7 @@ function App() {
           const prefs = await window.electronAPI.getPreferences();
           setUrl(prefs.last_url || '');
           setFormat(prefs.format || 'mp3_320');
+          setDownloadMethod(prefs.download_method || 'doubledouble');
           setDownloadPath(prefs.download_path || '');
         } catch (error) {
           console.error('Error loading preferences:', error);
@@ -46,6 +49,7 @@ function App() {
           await window.electronAPI.savePreferences({
             last_url: url,
             format: format,
+            download_method: downloadMethod,
             download_path: downloadPath
           });
         } catch (error) {
@@ -57,7 +61,7 @@ function App() {
     // Debounce the save operation
     const timeoutId = setTimeout(savePreferences, 500);
     return () => clearTimeout(timeoutId);
-  }, [url, format, downloadPath]);
+  }, [url, format, downloadMethod, downloadPath]);
 
   // Listen for download progress updates
   useEffect(() => {
@@ -148,18 +152,56 @@ function App() {
     }
   }, []);
 
+  const isSupportedMusicUrl = (inputUrl) => {
+    const normalizedInput = (inputUrl || '').trim();
+    if (!normalizedInput) {
+      return false;
+    }
+
+    try {
+      const parsedUrl = new URL(normalizedInput);
+      const host = parsedUrl.hostname.toLowerCase();
+      const pathName = parsedUrl.pathname.toLowerCase();
+
+      if (host.includes('tidal.com')) {
+        return true;
+      }
+
+      if (host === 'music.amazon.com' || host.endsWith('.music.amazon.com')) {
+        return true;
+      }
+
+      if (
+        (host === 'amazon.com' || host === 'www.amazon.com' || host.endsWith('.amazon.com')) &&
+        pathName.startsWith('/music')
+      ) {
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      const fallback = normalizedInput.toLowerCase();
+      return (
+        fallback.includes('tidal.com') ||
+        fallback.includes('music.amazon.') ||
+        fallback.includes('amazon.com/music/')
+      );
+    }
+  };
+
   const validateInputs = () => {
     if (!url.trim()) {
       setStatus('❌ Please enter a music URL');
       return false;
     }
 
-    if (!url.includes('tidal.com') && !url.includes('music.amazon.com')) {
+    if (!isSupportedMusicUrl(url)) {
       setStatus('❌ Please enter a valid Tidal or Amazon Music URL');
       return false;
     }
 
-    if (!downloadPath.trim()) {
+    // Download path not required for lucida.to method
+    if (downloadMethod !== 'lucida' && !downloadPath.trim()) {
       setStatus('❌ Please select a download folder');
       return false;
     }
@@ -224,6 +266,25 @@ function App() {
       return;
     }
 
+    // If lucida.to is selected, open in browser instead
+    if (downloadMethod === 'lucida') {
+      setStatus('🌐 Opening lucida.to in your browser...');
+      try {
+        const result = await window.electronAPI.openLucida(url.trim());
+        if (result.success) {
+          setStatus('✅ Opened lucida.to! Download the track from your browser.');
+          setUrl(''); // Clear the input after opening
+        } else {
+          setStatus(`❌ Failed to open lucida.to: ${result.error}`);
+        }
+      } catch (error) {
+        console.error('Error opening lucida.to:', error);
+        setStatus(`❌ Error opening lucida.to: ${error.message}`);
+      }
+      return;
+    }
+
+    // Original doubledouble logic
     setIsAddingToQueue(true);
     setStatus('🔍 Fetching song information...');
 
@@ -310,17 +371,25 @@ function App() {
               loading={isAddingToQueue}
             />
 
+            <DownloadMethodSection
+              downloadMethod={downloadMethod}
+              setDownloadMethod={setDownloadMethod}
+              disabled={isAddingToQueue}
+            />
+
             <FormatSection
               format={format}
               setFormat={setFormat}
               disabled={isAddingToQueue}
             />
 
-            <LocationSection
-              downloadPath={downloadPath}
-              setDownloadPath={setDownloadPath}
-              disabled={isAddingToQueue}
-            />
+            {downloadMethod !== 'lucida' && (
+              <LocationSection
+                downloadPath={downloadPath}
+                setDownloadPath={setDownloadPath}
+                disabled={isAddingToQueue}
+              />
+            )}
 
             <div className="section status-section">
               <div className="status-text">
@@ -332,9 +401,13 @@ function App() {
               <button
                 className="add-to-queue-btn"
                 onClick={handleAddToQueue}
-                disabled={isAddingToQueue || !url.trim() || !downloadPath.trim()}
+                disabled={isAddingToQueue || !url.trim() || (downloadMethod !== 'lucida' && !downloadPath.trim())}
               >
-                {isAddingToQueue ? '🔍 Fetching Info...' : '➕ Add to Queue'}
+                {isAddingToQueue
+                  ? '🔍 Fetching Info...'
+                  : downloadMethod === 'lucida'
+                  ? '🌐 Open in Lucida.to'
+                  : '➕ Add to Queue'}
               </button>
             </div>
           </>
