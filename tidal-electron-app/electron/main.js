@@ -12,6 +12,12 @@ let mainWindow;
 let downloadProcess = null;
 let downloadQueue = [];
 let isProcessingQueue = false;
+let captchaWindow = null;
+let captchaFlowPromise = null;
+let captchaArtifacts = {
+  captchaToken: '',
+  captchaResponse: ''
+};
 
 // Store user preferences
 const prefsPath = path.join(os.homedir(), '.tidal_downloader_prefs.json');
@@ -25,6 +31,399 @@ function cleanTidalUrl(url) {
     return urlObj.toString();
   } catch (error) {
     return url; // Return original if parsing fails
+  }
+}
+
+function buildLucidaUrl(musicUrl) {
+  const cleanUrl = cleanTidalUrl(musicUrl);
+  return `https://lucida.to/?url=${encodeURIComponent(cleanUrl)}&country=auto`;
+}
+
+function buildDoubleDoubleUrl(musicUrl) {
+  const normalizedUrl = musicUrl && musicUrl.includes('tidal.com')
+    ? cleanTidalUrl(musicUrl)
+    : musicUrl;
+  return `https://us.doubledouble.top/?url=${encodeURIComponent(normalizedUrl || '')}`;
+}
+
+function parseDownloaderFailure(output, errorOutput, sourceUrl, exitCode) {
+  const combined = `${output || ''}\n${errorOutput || ''}`.replace(/\r/g, '');
+  const lines = combined
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const lowercaseLines = lines.map(line => line.toLowerCase());
+  const requiresCaptcha = lowercaseLines.some(line =>
+    line.includes('captcha is required to continue') ||
+    line.includes('captcha bypass token is invalid')
+  );
+
+  if (requiresCaptcha) {
+    return {
+      message: 'DoubleDouble requires CAPTCHA verification. Complete it in the popup window and the app will retry automatically.',
+      requiresCaptcha
+    };
+  }
+
+  const usefulPatterns = [
+    /^❌\s*Download failed:/i,
+    /^Failed to initiate download:/i,
+    /^Error making request:/i,
+    /^Error polling status:/i,
+    /^Error downloading file:/i,
+    /^Invalid JSON response:/i,
+    /^Timeout waiting for download completion/i,
+    /^Download marked as done but no URL provided/i
+  ];
+
+  for (const line of lines) {
+    if (usefulPatterns.some(pattern => pattern.test(line))) {
+      return {
+        message: line,
+        requiresCaptcha
+      };
+    }
+  }
+
+  return {
+    message: lines.length > 0 ? lines[lines.length - 1] : `Process exited with code ${exitCode}`,
+    requiresCaptcha
+  };
+}
+
+function normalizeCaptchaArtifacts(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { captchaToken: '', captchaResponse: '' };
+  }
+
+  return {
+    captchaToken: typeof raw.captchaToken === 'string' ? raw.captchaToken.trim() : '',
+    captchaResponse: typeof raw.captchaResponse === 'string' ? raw.captchaResponse.trim() : ''
+  };
+}
+
+function hasCaptchaArtifacts(raw) {
+  const artifacts = normalizeCaptchaArtifacts(raw);
+  return Boolean(artifacts.captchaToken || artifacts.captchaResponse);
+}
+
+function rememberCaptchaArtifacts(raw) {
+  const artifacts = normalizeCaptchaArtifacts(raw);
+  if (artifacts.captchaToken) {
+    captchaArtifacts.captchaToken = artifacts.captchaToken;
+  }
+  if (artifacts.captchaResponse) {
+    captchaArtifacts.captchaResponse = artifacts.captchaResponse;
+  }
+}
+
+function getCaptchaArtifactsSnapshot() {
+  const snapshot = {
+    captchaToken: captchaArtifacts.captchaToken || '',
+    captchaResponse: captchaArtifacts.captchaResponse || ''
+  };
+  // Raw CAPTCHA responses are usually short-lived, use them once.
+  captchaArtifacts.captchaResponse = '';
+  return snapshot;
+}
+
+async function readCaptchaArtifactsFromWindow(windowRef) {
+  const raw = await windowRef.webContents.executeJavaScript(
+    `(() => ({
+      captchaToken: sessionStorage.getItem("captchaToken") || "",
+      captchaResponse: sessionStorage.getItem("captcha-response") || ""
+    }))();`,
+    true
+  );
+  return normalizeCaptchaArtifacts(raw);
+}
+
+function requestDoubleDoubleVerification(sourceUrl) {
+  if (captchaFlowPromise) {
+    return captchaFlowPromise;
+  }
+
+  captchaFlowPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    let pollTimer = null;
+
+    const cleanup = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      captchaFlowPromise = null;
+    };
+
+    const finish = (error, artifacts) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+
+      const finalize = () => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(artifacts);
+        }
+      };
+
+      if (captchaWindow && !captchaWindow.isDestroyed()) {
+        const closingWindow = captchaWindow;
+        captchaWindow = null;
+        closingWindow.close();
+      } else {
+        captchaWindow = null;
+      }
+
+      finalize();
+    };
+
+    const authUrl = buildDoubleDoubleUrl(sourceUrl);
+    captchaWindow = new BrowserWindow({
+      width: 1100,
+      height: 860,
+      minWidth: 900,
+      minHeight: 700,
+      parent: mainWindow,
+      modal: true,
+      show: false,
+      title: 'DoubleDouble Verification',
+      autoHideMenuBar: true,
+      webPreferences: {
+        partition: 'persist:doubledouble-auth',
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
+
+    captchaWindow.once('ready-to-show', () => {
+      if (captchaWindow && !captchaWindow.isDestroyed()) {
+        captchaWindow.show();
+        captchaWindow.focus();
+      }
+    });
+
+    captchaWindow.on('closed', () => {
+      if (!settled) {
+        cleanup();
+        captchaWindow = null;
+        reject(new Error('Verification window closed before CAPTCHA completed.'));
+      }
+    });
+
+    captchaWindow.loadURL(authUrl).catch((loadError) => {
+      finish(new Error(`Failed to open DoubleDouble verification window: ${loadError.message}`));
+    });
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('download-progress', {
+        status: 'processing',
+        message: 'Please complete DoubleDouble CAPTCHA in the popup window, then click Download there once.'
+      });
+    }
+
+    pollTimer = setInterval(async () => {
+      if (!captchaWindow || captchaWindow.isDestroyed()) {
+        return;
+      }
+
+      try {
+        const artifacts = await readCaptchaArtifactsFromWindow(captchaWindow);
+        if (hasCaptchaArtifacts(artifacts)) {
+          rememberCaptchaArtifacts(artifacts);
+          finish(null, getCaptchaArtifactsSnapshot());
+        }
+      } catch (pollError) {
+        // Ignore transient script execution errors while page is loading/changing.
+      }
+    }, 1200);
+  });
+
+  return captchaFlowPromise;
+}
+
+function getDownloaderExecutablePath() {
+  const arch = os.arch();
+  return isDev
+    ? 'python3'
+    : path.join(process.resourcesPath, `binaries/tidal-downloader-${arch}`);
+}
+
+function configureFfmpegPath() {
+  if (isDev) {
+    return;
+  }
+  const arch = os.arch();
+  const ffmpegPath = path.join(process.resourcesPath, `binaries/ffmpeg-${arch}`);
+  const ffmpegDir = path.dirname(ffmpegPath);
+  process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+}
+
+function buildDownloaderArgs({ url, format, downloadPath, mode, captcha }) {
+  const args = isDev
+    ? [path.join(__dirname, '../../tidal_downloader.py'), url]
+    : [url];
+
+  if (mode === 'queue') {
+    if (format === 'flac') {
+      args.push('--no-mp3');
+      args.push('-f', 'flac');
+    } else {
+      args.push('-f', 'flac');
+    }
+  } else if (format === 'flac') {
+    args.push('--no-mp3');
+    args.push('-f', 'flac');
+  } else {
+    args.push('-f', 'mp3');
+  }
+
+  // The current production binary may not yet include CAPTCHA CLI args.
+  if (isDev && captcha && captcha.captchaResponse) {
+    args.push('--captcha-response', captcha.captchaResponse);
+  }
+  if (isDev && captcha && captcha.captchaToken) {
+    args.push('--captcha-token', captcha.captchaToken);
+  }
+
+  args.push('-o', downloadPath);
+  return args;
+}
+
+function spawnDownloaderAttempt({
+  url,
+  format,
+  downloadPath,
+  mode,
+  captcha,
+  trackGlobalProcess = false,
+  onStdout,
+  onStderr
+}) {
+  return new Promise((resolve, reject) => {
+    const executablePath = getDownloaderExecutablePath();
+    configureFfmpegPath();
+    const args = buildDownloaderArgs({ url, format, downloadPath, mode, captcha });
+
+    console.log('Starting download with args:', args);
+    console.log('Executable path:', executablePath);
+    console.log('Is development mode:', isDev);
+
+    if (!isDev && !fs.existsSync(executablePath)) {
+      reject(new Error(`Executable not found: ${executablePath}`));
+      return;
+    }
+
+    if (!isDev) {
+      try {
+        fs.chmodSync(executablePath, 0o755);
+      } catch (permissionError) {
+        console.warn('Could not set executable permissions:', permissionError.message);
+      }
+    }
+
+    let childProcess;
+    try {
+      childProcess = spawn(executablePath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+        shell: false,
+        detached: false
+      });
+    } catch (spawnError) {
+      reject(new Error(`Failed to start download process: ${spawnError.message}`));
+      return;
+    }
+
+    if (trackGlobalProcess) {
+      downloadProcess = childProcess;
+    }
+
+    let output = '';
+    let errorOutput = '';
+
+    childProcess.stdout.on('data', (data) => {
+      const text = data.toString();
+      output += text;
+      if (onStdout) {
+        onStdout(text);
+      }
+    });
+
+    childProcess.stderr.on('data', (data) => {
+      const text = data.toString();
+      errorOutput += text;
+      if (onStderr) {
+        onStderr(text);
+      }
+    });
+
+    childProcess.on('close', (code) => {
+      if (trackGlobalProcess && downloadProcess === childProcess) {
+        downloadProcess = null;
+      }
+
+      if (code === 0) {
+        resolve({ output, errorOutput, code });
+        return;
+      }
+
+      const failure = parseDownloaderFailure(output, errorOutput, url, code);
+      const error = new Error(failure.message);
+      error.requiresCaptcha = Boolean(failure.requiresCaptcha);
+      error.failure = failure;
+      reject(error);
+    });
+
+    childProcess.on('error', (error) => {
+      if (trackGlobalProcess && downloadProcess === childProcess) {
+        downloadProcess = null;
+      }
+      reject(error);
+    });
+  });
+}
+
+async function runDownloaderWithCaptchaRetry({
+  url,
+  format,
+  downloadPath,
+  mode,
+  trackGlobalProcess = false,
+  onStdout,
+  onStderr
+}) {
+  try {
+    return await spawnDownloaderAttempt({
+      url,
+      format,
+      downloadPath,
+      mode,
+      captcha: getCaptchaArtifactsSnapshot(),
+      trackGlobalProcess,
+      onStdout,
+      onStderr
+    });
+  } catch (firstError) {
+    if (!firstError.requiresCaptcha) {
+      throw firstError;
+    }
+
+    const verifiedArtifacts = await requestDoubleDoubleVerification(url);
+    return await spawnDownloaderAttempt({
+      url,
+      format,
+      downloadPath,
+      mode,
+      captcha: verifiedArtifacts,
+      trackGlobalProcess,
+      onStdout,
+      onStderr
+    });
   }
 }
 
@@ -192,87 +591,14 @@ async function processQueue() {
   setTimeout(() => processQueue(), 1000);
 }
 
-function downloadSong(queueItem) {
-  return new Promise((resolve, reject) => {
-    // Use standalone executable in production, Python script in development
-    const arch = os.arch();
-    const executablePath = isDev 
-      ? 'python3'
-      : path.join(process.resourcesPath, `binaries/tidal-downloader-${arch}`);
-    
-    // Verify executable exists
-    console.log('Queue download - Executable path:', executablePath);
-    console.log('Queue download - isDev:', isDev);
-    console.log('Queue download - process.resourcesPath:', process.resourcesPath);
-    
-    // Set FFmpeg path for the executable
-    if (!isDev) {
-      const arch = os.arch();
-      const ffmpegPath = path.join(process.resourcesPath, `binaries/ffmpeg-${arch}`);
-      const ffmpegDir = path.dirname(ffmpegPath);
-      process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
-      console.log('Queue download - FFmpeg path:', ffmpegPath);
-      console.log('Queue download - FFmpeg exists:', fs.existsSync(ffmpegPath));
-      console.log('Queue download - Executable exists:', fs.existsSync(executablePath));
-    }
-    
-    const args = isDev 
-      ? [path.join(__dirname, '../../tidal_downloader.py'), queueItem.url]
-      : [queueItem.url];
-    if (queueItem.format === 'flac') {
-      args.push('--no-mp3');
-      args.push('-f', 'flac');
-    } else {
-      // For MP3 320kbps, download as FLAC and convert to MP3 320kbps
-      args.push('-f', 'flac');
-      // Don't add --no-mp3, so it will convert to MP3 320kbps
-    }
-    args.push('-o', queueItem.downloadPath);
-    
-    console.log('Starting download for queue item:', queueItem.id);
-    console.log('Command args:', args);
-    console.log('About to spawn process with:', { executablePath, args });
-    
-    // Check if executable exists and has permissions
-    if (!isDev && !fs.existsSync(executablePath)) {
-      reject(new Error(`Executable not found: ${executablePath}`));
-      return;
-    }
-
-    // Set executable permissions on macOS
-    if (!isDev) {
-      try {
-        fs.chmodSync(executablePath, 0o755);
-        console.log('Set executable permissions for:', executablePath);
-      } catch (permError) {
-        console.warn('Could not set permissions:', permError.message);
-      }
-    }
-
-    let downloadProcess;
-    try {
-      downloadProcess = spawn(executablePath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-        shell: false,
-        detached: false
-      });
-      
-      console.log('Process spawned successfully, PID:', downloadProcess.pid);
-    } catch (spawnError) {
-      console.error('Failed to spawn process:', spawnError);
-      reject(new Error(`Failed to start download process: ${spawnError.message}`));
-      return;
-    }
-    
-    let output = '';
-    let errorOutput = '';
-    
-    downloadProcess.stdout.on('data', (data) => {
-      const text = data.toString();
-      output += text;
-      
-      // Update progress for this specific queue item
+async function downloadSong(queueItem) {
+  await runDownloaderWithCaptchaRetry({
+    url: queueItem.url,
+    format: queueItem.format,
+    downloadPath: queueItem.downloadPath,
+    mode: 'queue',
+    trackGlobalProcess: false,
+    onStdout: (text) => {
       if (text.includes('Progress:')) {
         const progressMatch = text.match(/Progress: ([\d.]+)%/);
         if (progressMatch) {
@@ -280,23 +606,7 @@ function downloadSong(queueItem) {
           mainWindow.webContents.send('queue-updated', downloadQueue);
         }
       }
-    });
-    
-    downloadProcess.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-    
-    downloadProcess.on('close', (code) => {
-      if (code === 0) {
-        resolve({ success: true, output });
-      } else {
-        reject(new Error(errorOutput || `Process exited with code ${code}`));
-      }
-    });
-    
-    downloadProcess.on('error', (error) => {
-      reject(error);
-    });
+    }
   });
 }
 
@@ -360,6 +670,9 @@ function createWindow() {
     if (downloadProcess) {
       downloadProcess.kill();
     }
+    if (captchaWindow && !captchaWindow.isDestroyed()) {
+      captchaWindow.close();
+    }
   });
 }
 
@@ -397,7 +710,8 @@ ipcMain.handle('get-preferences', async () => {
   return {
     download_path: path.join(os.homedir(), 'Downloads'),
     format: 'mp3_320',
-    last_url: ''
+    last_url: '',
+    download_method: 'doubledouble' // 'doubledouble' or 'lucida'
   };
 });
 
@@ -436,6 +750,18 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
     }
   } catch (error) {
     console.error('Error opening folder:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('open-lucida', async (event, url) => {
+  try {
+    const lucidaUrl = buildLucidaUrl(url);
+    console.log('Opening lucida.to URL:', lucidaUrl);
+    await shell.openExternal(lucidaUrl);
+    return { success: true, url: lucidaUrl };
+  } catch (error) {
+    console.error('Error opening lucida.to:', error);
     return { success: false, error: error.message };
   }
 });
@@ -499,167 +825,85 @@ ipcMain.handle('retry-download', async (event, itemId) => {
 });
 
 ipcMain.handle('start-download', async (event, { url, format, downloadPath }) => {
-  return new Promise((resolve, reject) => {
-    // Use standalone executable in production, Python script in development
-    const arch = os.arch();
-    const executablePath = isDev 
-      ? 'python3'
-      : path.join(process.resourcesPath, `binaries/tidal-downloader-${arch}`);
-    
-    // Set FFmpeg path for the executable
-    if (!isDev) {
-      const arch = os.arch();
-      const ffmpegPath = path.join(process.resourcesPath, `binaries/ffmpeg-${arch}`);
-      const ffmpegDir = path.dirname(ffmpegPath);
-      process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
-    }
-    
-    // Prepare arguments
-    const args = isDev 
-      ? [path.join(__dirname, '../../tidal_downloader.py'), url]
-      : [url];
-    if (format === 'flac') {
-      args.push('--no-mp3');
-      args.push('-f', 'flac');
-    } else {
-      args.push('-f', 'mp3');
-    }
-    args.push('-o', downloadPath);
-    
-    console.log('Starting download with args:', args);
-    
-    // Check if executable exists and has permissions
-    if (!isDev && !fs.existsSync(executablePath)) {
-      reject(new Error(`Executable not found: ${executablePath}`));
-      return;
-    }
+  try {
+    const result = await runDownloaderWithCaptchaRetry({
+      url,
+      format,
+      downloadPath,
+      mode: 'direct',
+      trackGlobalProcess: true,
+      onStdout: (text) => {
+        console.log('Python stdout:', text);
 
-    // Set executable permissions on macOS
-    if (!isDev) {
-      try {
-        fs.chmodSync(executablePath, 0o755);
-        console.log('Set executable permissions for start-download:', executablePath);
-      } catch (permError) {
-        console.warn('Could not set permissions for start-download:', permError.message);
-      }
-    }
-    
-    // Spawn Python process
-    try {
-      downloadProcess = spawn(executablePath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-        shell: false,
-        detached: false
-      });
-      
-      console.log('Start-download process spawned successfully, PID:', downloadProcess.pid);
-    } catch (spawnError) {
-      console.error('Failed to spawn start-download process:', spawnError);
-      reject(new Error(`Failed to start download process: ${spawnError.message}`));
-      return;
-    }
-    
-    let output = '';
-    let errorOutput = '';
-    
-    downloadProcess.stdout.on('data', (data) => {
-      const text = data.toString();
-      output += text;
-      console.log('Python stdout:', text);
-      
-      // Send progress updates to renderer
-      if (text.includes('Starting download')) {
-        mainWindow.webContents.send('download-progress', { 
-          status: 'starting', 
-          message: 'Starting download...' 
-        });
-      } else if (text.includes('Download initiated')) {
-        const idMatch = text.match(/ID: ([^\)]+)/);
-        const id = idMatch ? idMatch[1] : 'Unknown';
-        mainWindow.webContents.send('download-progress', { 
-          status: 'queued', 
-          message: `Download queued (ID: ${id})` 
-        });
-      } else if (text.includes('Status:')) {
-        const statusMatch = text.match(/Status: (.+)/);
-        const status = statusMatch ? statusMatch[1] : 'Processing';
-        mainWindow.webContents.send('download-progress', { 
-          status: 'processing', 
-          message: `Status: ${status}` 
-        });
-      } else if (text.includes('Progress:')) {
-        const progressMatch = text.match(/Progress: ([\d.]+)%/);
-        const progress = progressMatch ? parseFloat(progressMatch[1]) : 0;
-        mainWindow.webContents.send('download-progress', { 
-          status: 'downloading', 
-          message: `Downloading... ${progress}%`,
-          progress 
-        });
-      } else if (text.includes('Converting')) {
-        mainWindow.webContents.send('download-progress', { 
-          status: 'converting', 
-          message: 'Converting to MP3 320kbps...' 
-        });
-      } else if (text.includes('Converted to:') || text.includes('.mp3')) {
-        mainWindow.webContents.send('download-progress', { 
-          status: 'converting', 
-          message: 'Converting to MP3 320kbps...' 
-        });
-      } else if (text.includes('Download completed successfully') || text.includes('Cleanup complete') || text.includes('Final MP3 files')) {
-        mainWindow.webContents.send('download-progress', { 
-          status: 'completed', 
-          message: '✅ Download completed! Ready for your DJ set! 🎧',
-          progress: 100
-        });
+        if (text.includes('Starting download')) {
+          mainWindow.webContents.send('download-progress', {
+            status: 'starting',
+            message: 'Starting download...'
+          });
+        } else if (text.includes('Download initiated')) {
+          const idMatch = text.match(/ID: ([^\)]+)/);
+          const id = idMatch ? idMatch[1] : 'Unknown';
+          mainWindow.webContents.send('download-progress', {
+            status: 'queued',
+            message: `Download queued (ID: ${id})`
+          });
+        } else if (text.includes('Status:')) {
+          const statusMatch = text.match(/Status: (.+)/);
+          const status = statusMatch ? statusMatch[1] : 'Processing';
+          mainWindow.webContents.send('download-progress', {
+            status: 'processing',
+            message: `Status: ${status}`
+          });
+        } else if (text.includes('Progress:')) {
+          const progressMatch = text.match(/Progress: ([\d.]+)%/);
+          const progress = progressMatch ? parseFloat(progressMatch[1]) : 0;
+          mainWindow.webContents.send('download-progress', {
+            status: 'downloading',
+            message: `Downloading... ${progress}%`,
+            progress
+          });
+        } else if (text.includes('Converting')) {
+          mainWindow.webContents.send('download-progress', {
+            status: 'converting',
+            message: 'Converting to MP3 320kbps...'
+          });
+        } else if (text.includes('Converted to:') || text.includes('.mp3')) {
+          mainWindow.webContents.send('download-progress', {
+            status: 'converting',
+            message: 'Converting to MP3 320kbps...'
+          });
+        } else if (
+          text.includes('Download completed successfully') ||
+          text.includes('Cleanup complete') ||
+          text.includes('Final MP3 files')
+        ) {
+          mainWindow.webContents.send('download-progress', {
+            status: 'completed',
+            message: '✅ Download completed! Ready for your DJ set! 🎧',
+            progress: 100
+          });
+        }
+      },
+      onStderr: (text) => {
+        console.error('Python stderr:', text);
       }
     });
-    
-    downloadProcess.stderr.on('data', (data) => {
-      const text = data.toString();
-      errorOutput += text;
-      console.error('Python stderr:', text);
-      
-      if (text.includes('Error') || text.includes('Failed')) {
-        mainWindow.webContents.send('download-progress', { 
-          status: 'error', 
-          message: `Error: ${text}` 
-        });
-      }
+
+    mainWindow.webContents.send('download-progress', {
+      status: 'completed',
+      message: '✅ Download completed! Ready for your DJ set! 🎧',
+      progress: 100
     });
-    
-    downloadProcess.on('close', (code) => {
-      downloadProcess = null;
-      console.log(`Python process exited with code ${code}`);
-      
-      if (code === 0) {
-        // Send completion status when process exits successfully
-        mainWindow.webContents.send('download-progress', { 
-          status: 'completed', 
-          message: '✅ Download completed! Ready for your DJ set! 🎧',
-          progress: 100
-        });
-        resolve({ success: true, output });
-      } else {
-        const errorMsg = errorOutput || `Process exited with code ${code}`;
-        mainWindow.webContents.send('download-progress', { 
-          status: 'error', 
-          message: `Download failed: ${errorMsg}` 
-        });
-        reject(new Error(errorMsg));
-      }
+
+    return { success: true, output: result.output };
+  } catch (error) {
+    console.error('Download failed:', error);
+    mainWindow.webContents.send('download-progress', {
+      status: 'error',
+      message: error.message || 'Download failed.'
     });
-    
-    downloadProcess.on('error', (error) => {
-      downloadProcess = null;
-      console.error('Failed to start Python process:', error);
-      mainWindow.webContents.send('download-progress', { 
-        status: 'error', 
-        message: `Failed to start download: ${error.message}` 
-      });
-      reject(error);
-    });
-  });
+    throw error;
+  }
 });
 
 ipcMain.handle('cancel-download', async () => {

@@ -13,15 +13,20 @@ import shutil
 from pathlib import Path
 import logging
 
-# Set up logging
+# Set up logging (file-first to avoid polluting Electron stderr output)
+log_level_name = os.getenv('TIDAL_DOWNLOADER_LOG_LEVEL', 'INFO').upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
+handlers = [logging.FileHandler('/tmp/tidal_downloader.log')]
+
+if os.getenv('TIDAL_DOWNLOADER_STDOUT_LOGS') == '1':
+    handlers.append(logging.StreamHandler(sys.stdout))
+
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/tmp/tidal_downloader.log'),
-        logging.StreamHandler()
-    ]
+    handlers=handlers
 )
+logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 class MusicDownloader:
     def __init__(self, base_url="https://us.doubledouble.top"):
@@ -107,7 +112,16 @@ class MusicDownloader:
         
         return clean_url
 
-    def download(self, url, format_type="flac", output_dir=".", convert_to_mp3=True, extract_zip=True):
+    def download(
+        self,
+        url,
+        format_type="flac",
+        output_dir=".",
+        convert_to_mp3=True,
+        extract_zip=True,
+        captcha_token=None,
+        captcha_response=None
+    ):
         """Download music from supported streaming services"""
         # Detect the service
         service = self._detect_service(url)
@@ -138,6 +152,11 @@ class MusicDownloader:
             'url': clean_url,
             'format': format_type
         }
+
+        if captcha_response:
+            params['captcha'] = captcha_response
+        elif captcha_token:
+            params['token'] = captcha_token
         
         try:
             response = self.session.get(dl_url, params=params)
@@ -146,7 +165,15 @@ class MusicDownloader:
             
             data = response.json()
             if not data.get('success') or 'id' not in data:
-                print(f"Failed to initiate download: {data}")
+                error_message = data.get('error', str(data))
+                print(f"Failed to initiate download: {error_message}")
+                logging.error(f"Failed to initiate download: {error_message}")
+
+                if isinstance(error_message, str) and 'captcha is required to continue' in error_message.lower():
+                    handoff_url = f"{self.base_url}/?url={urllib.parse.quote(clean_url, safe='')}"
+                    print("CAPTCHA is required by DoubleDouble for API access.")
+                    print(f"Open in browser: {handoff_url}")
+
                 return False
                 
             download_id = data['id']
@@ -472,6 +499,10 @@ def main():
                        help='Keep original format instead of converting to MP3')
     parser.add_argument('--no-extract', action='store_true',
                        help='Don\'t extract ZIP file')
+    parser.add_argument('--captcha-token', default='',
+                       help='DoubleDouble CAPTCHA bypass token (optional)')
+    parser.add_argument('--captcha-response', default='',
+                       help='Raw CAPTCHA response token (optional)')
     
     args = parser.parse_args()
     
@@ -486,7 +517,9 @@ def main():
         args.format, 
         args.output,
         convert_to_mp3=not args.no_mp3,
-        extract_zip=not args.no_extract
+        extract_zip=not args.no_extract,
+        captcha_token=args.captcha_token or None,
+        captcha_response=args.captcha_response or None
     )
     
     if not success:
