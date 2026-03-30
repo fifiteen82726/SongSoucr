@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDownload: () => ipcRenderer.invoke('cancel-download'),
   
   // Queue functionality
-  addToQueue: ({ url, format, downloadPath }) =>
-    ipcRenderer.invoke('add-to-queue', { url, format, downloadPath }),
+  addToQueue: ({ url, format, downloadPath, downloadMethod }) =>
+    ipcRenderer.invoke('add-to-queue', { url, format, downloadPath, downloadMethod }),
   getQueue: () => ipcRenderer.invoke('get-queue'),
   removeFromQueue: (itemId) => ipcRenderer.invoke('remove-from-queue', itemId),
   retryDownload: (itemId) => ipcRenderer.invoke('retry-download', itemId),

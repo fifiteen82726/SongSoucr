@@ -6,6 +6,7 @@ const isDev = process.env.NODE_ENV === 'development' || process.defaultApp || /[
 console.log('Development mode detection:', { isDev, NODE_ENV: process.env.NODE_ENV, defaultApp: process.defaultApp });
 const fs = require('fs');
 const os = require('os');
+const http = require('http');
 const https = require('https');
 
 let mainWindow;
@@ -14,6 +15,7 @@ let downloadQueue = [];
 let isProcessingQueue = false;
 let captchaWindow = null;
 let captchaFlowPromise = null;
+let localIngestServer = null;
 let captchaArtifacts = {
   captchaToken: '',
   captchaResponse: ''
@@ -21,22 +23,210 @@ let captchaArtifacts = {
 
 // Store user preferences
 const prefsPath = path.join(os.homedir(), '.tidal_downloader_prefs.json');
+const LUCIDA_BASE_URL = 'https://lucida.to';
+const LUCIDA_DIRECT_HOSTS = ['maus.lucida.to', 'hund.lucida.to', 'katze.lucida.to'];
+const DEFAULT_HTTP_TIMEOUT_MS = 45000;
+const LUCIDA_POLL_INTERVAL_MS = 1000;
+const LUCIDA_MAX_POLL_ATTEMPTS = 120;
+const DEFAULT_HTTP_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
+const LOCAL_INGEST_HOST = '127.0.0.1';
+const LOCAL_INGEST_PORT = 43893;
 
-// Helper functions
-function cleanTidalUrl(url) {
+function getDefaultPreferences() {
+  return {
+    download_path: path.join(os.homedir(), 'Downloads'),
+    format: 'mp3_320',
+    last_url: '',
+    download_method: 'doubledouble'
+  };
+}
+
+function readPreferencesSync() {
+  const defaults = getDefaultPreferences();
   try {
-    const urlObj = new URL(url);
-    // Remove tracking parameters like ?u
-    urlObj.search = '';
-    return urlObj.toString();
+    if (!fs.existsSync(prefsPath)) {
+      return defaults;
+    }
+    const data = fs.readFileSync(prefsPath, 'utf8');
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== 'object') {
+      return defaults;
+    }
+    return {
+      ...defaults,
+      ...parsed
+    };
   } catch (error) {
-    return url; // Return original if parsing fails
+    console.error('Error reading preferences:', error);
+    return defaults;
   }
 }
 
-function buildLucidaUrl(musicUrl) {
-  const cleanUrl = cleanTidalUrl(musicUrl);
-  return `https://lucida.to/?url=${encodeURIComponent(cleanUrl)}&country=auto`;
+// Helper functions
+function cleanTidalUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) {
+    return raw;
+  }
+
+  const withScheme = /^(?:https?:)?\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const urlObj = new URL(withScheme);
+    const host = urlObj.hostname.toLowerCase();
+    if (!host.includes('tidal.com')) {
+      return raw;
+    }
+
+    let pathname = urlObj.pathname || '/';
+    pathname = pathname.replace(/^\/browse(?=\/)/i, '');
+    pathname = pathname.replace(/\/+$/, '');
+    pathname = pathname.replace(/\/u$/i, '');
+
+    const normalizedPath = pathname || '/';
+    const trackMatch = normalizedPath.match(/^\/track\/(\d+)$/i);
+    const albumMatch = normalizedPath.match(/^\/album\/(\d+)$/i);
+    const playlistMatch = normalizedPath.match(/^\/playlist\/([0-9a-f-]+)$/i);
+    const videoMatch = normalizedPath.match(/^\/video\/(\d+)$/i);
+
+    urlObj.hostname = 'tidal.com';
+    if (trackMatch) {
+      urlObj.pathname = `/track/${trackMatch[1]}`;
+    } else if (albumMatch) {
+      urlObj.pathname = `/album/${albumMatch[1]}`;
+    } else if (playlistMatch) {
+      urlObj.pathname = `/playlist/${playlistMatch[1]}`;
+    } else if (videoMatch) {
+      urlObj.pathname = `/video/${videoMatch[1]}`;
+    } else {
+      urlObj.pathname = normalizedPath;
+    }
+
+    // Remove tracking parameters like ?u and app deep-link hashes.
+    urlObj.search = '';
+    urlObj.hash = '';
+    return urlObj.toString();
+  } catch (error) {
+    return raw; // Return original if parsing fails
+  }
+}
+
+function detectMusicService(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.toLowerCase();
+    const pathName = parsedUrl.pathname.toLowerCase();
+    const query = parsedUrl.search.toLowerCase();
+
+    if (host.includes('tidal.com')) {
+      return 'tidal';
+    }
+
+    if (host === 'music.amazon.com' || host.endsWith('.music.amazon.com')) {
+      return 'amazon';
+    }
+
+    if (host === 'amazon.com' || host === 'www.amazon.com' || host.endsWith('.amazon.com')) {
+      if (
+        pathName.startsWith('/music') ||
+        pathName.startsWith('/albums') ||
+        pathName.startsWith('/tracks') ||
+        query.includes('trackasin=') ||
+        query.includes('musicterritory=')
+      ) {
+        return 'amazon';
+      }
+    }
+  } catch (error) {
+    const fallback = String(url || '').toLowerCase();
+    if (fallback.includes('tidal.com')) {
+      return 'tidal';
+    }
+    if (fallback.includes('music.amazon.') || fallback.includes('amazon.com/music/')) {
+      return 'amazon';
+    }
+  }
+
+  return null;
+}
+
+function cleanAmazonUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.toLowerCase();
+
+    if (parsedUrl.pathname.startsWith('/music/player')) {
+      parsedUrl.pathname = parsedUrl.pathname.replace('/music/player', '') || '/music';
+    }
+
+    if (host === 'amazon.com' || host === 'www.amazon.com' || host.endsWith('.amazon.com')) {
+      const baseHost = host.startsWith('www.') ? host.substring(4) : host;
+      if (!baseHost.startsWith('music.')) {
+        parsedUrl.hostname = `music.${baseHost}`;
+      }
+    }
+
+    const allowedParams = ['marketplaceId', 'musicTerritory', 'trackAsin'];
+    const cleanedQuery = new URLSearchParams();
+    for (const key of allowedParams) {
+      const value = parsedUrl.searchParams.get(key);
+      if (value) {
+        cleanedQuery.set(key, value);
+      }
+    }
+    parsedUrl.search = cleanedQuery.toString();
+
+    return parsedUrl.toString();
+  } catch (error) {
+    return url;
+  }
+}
+
+function normalizeMusicUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  const service = detectMusicService(trimmed);
+  if (service === 'tidal') {
+    return cleanTidalUrl(trimmed);
+  }
+  if (service === 'amazon') {
+    return cleanAmazonUrl(trimmed);
+  }
+  return trimmed;
+}
+
+function isTidalPlaylistUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.toLowerCase();
+    const pathname = parsedUrl.pathname.toLowerCase();
+    if (!host.includes('tidal.com')) {
+      return false;
+    }
+    return pathname.includes('/playlist/');
+  } catch (error) {
+    const fallback = String(url || '').toLowerCase();
+    return fallback.includes('tidal.com/playlist/') || fallback.includes('tidal.com/browse/playlist/');
+  }
+}
+
+function extractTidalTrackId(url) {
+  const raw = String(url || '');
+  const fromPath = raw.match(/(?:\/browse)?\/track\/(\d+)/i);
+  if (fromPath && fromPath[1]) {
+    return fromPath[1];
+  }
+  const directDigits = raw.match(/^\d+$/);
+  if (directDigits) {
+    return directDigits[0];
+  }
+  return null;
+}
+
+function canonicalizeTidalTrackUrl(url) {
+  const trackId = extractTidalTrackId(url);
+  if (!trackId) {
+    return null;
+  }
+  return `https://tidal.com/track/${trackId}`;
 }
 
 function buildDoubleDoubleUrl(musicUrl) {
@@ -427,9 +617,753 @@ async function runDownloaderWithCaptchaRetry({
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildLucidaLoadUrl(apiPath, queryParams = {}) {
+  const params = new URLSearchParams();
+  params.set('url', apiPath);
+  for (const [key, value] of Object.entries(queryParams)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value));
+    }
+  }
+  return `${LUCIDA_BASE_URL}/api/load?${params.toString()}`;
+}
+
+function buildLucidaDirectUrl(hostname, apiPath, queryParams = {}) {
+  const directUrl = new URL(apiPath, `https://${hostname}`);
+  for (const [key, value] of Object.entries(queryParams)) {
+    if (value !== undefined && value !== null && value !== '') {
+      directUrl.searchParams.set(key, String(value));
+    }
+  }
+  return directUrl.toString();
+}
+
+function normalizeLucidaHost(serverName) {
+  const raw = String(serverName || '').trim().toLowerCase();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname) {
+      return parsed.hostname.toLowerCase();
+    }
+  } catch (error) {
+    // Not a full URL, continue with hostname normalization.
+  }
+
+  if (raw.endsWith('.lucida.to')) {
+    return raw;
+  }
+
+  if (/^[a-z0-9-]+$/i.test(raw)) {
+    return `${raw}.lucida.to`;
+  }
+
+  return null;
+}
+
+function getLucidaCandidateHosts(preferredServerName = '') {
+  const seen = new Set();
+  const preferredHost = normalizeLucidaHost(preferredServerName);
+  const normalized = [];
+
+  if (preferredHost && !seen.has(preferredHost)) {
+    seen.add(preferredHost);
+    normalized.push(preferredHost);
+  }
+
+  for (const host of LUCIDA_DIRECT_HOSTS) {
+    const normalizedHost = normalizeLucidaHost(host);
+    if (normalizedHost && !seen.has(normalizedHost)) {
+      seen.add(normalizedHost);
+      normalized.push(normalizedHost);
+    }
+  }
+
+  return normalized;
+}
+
+function sanitizeFilename(filename) {
+  return String(filename || '')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .trim();
+}
+
+function getFilenameFromContentDisposition(contentDisposition) {
+  if (!contentDisposition || typeof contentDisposition !== 'string') {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      return utf8Match[1];
+    }
+  }
+
+  const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  if (filenameMatch && filenameMatch[1]) {
+    return filenameMatch[1];
+  }
+
+  return null;
+}
+
+function inferExtensionFromContentType(contentType) {
+  const normalized = String(contentType || '').toLowerCase();
+  if (normalized.includes('audio/flac')) {
+    return '.flac';
+  }
+  if (normalized.includes('audio/mpeg') || normalized.includes('audio/mp3')) {
+    return '.mp3';
+  }
+  if (normalized.includes('audio/ogg')) {
+    return '.ogg';
+  }
+  if (normalized.includes('audio/wav') || normalized.includes('audio/x-wav')) {
+    return '.wav';
+  }
+  if (normalized.includes('audio/mp4') || normalized.includes('audio/aac') || normalized.includes('audio/x-m4a')) {
+    return '.m4a';
+  }
+  if (normalized.includes('application/zip')) {
+    return '.zip';
+  }
+  return '';
+}
+
+function ensureUniqueFilePath(targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    return targetPath;
+  }
+
+  const parsed = path.parse(targetPath);
+  let counter = 1;
+  while (true) {
+    const candidate = path.join(parsed.dir, `${parsed.name} (${counter})${parsed.ext}`);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+    counter += 1;
+  }
+}
+
+function buildFallbackFilename(queueItem) {
+  const artist = sanitizeFilename(queueItem.artist || 'Unknown Artist') || 'Unknown Artist';
+  const title = sanitizeFilename(queueItem.title || 'Unknown Track') || 'Unknown Track';
+  return `${artist} - ${title}.flac`;
+}
+
+function extractLucidaErrorMessage(payload) {
+  if (!payload) {
+    return 'Unknown Lucida error.';
+  }
+
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  if (typeof payload.error === 'string' && payload.error.trim()) {
+    return payload.error.trim();
+  }
+
+  if (typeof payload.message === 'string' && payload.message.trim()) {
+    return payload.message.trim();
+  }
+
+  const numericKeys = Object.keys(payload).filter((key) => /^\d+$/.test(key));
+  if (numericKeys.length > 0) {
+    const rawText = numericKeys
+      .sort((a, b) => Number(a) - Number(b))
+      .map((key) => payload[key])
+      .join('');
+    const compactText = rawText.replace(/\s+/g, ' ').trim();
+    if (compactText) {
+      if (compactText.includes('404 Not Found')) {
+        return '404 Not Found (Lucida backend could not process this item).';
+      }
+      return compactText.slice(0, 220);
+    }
+  }
+
+  return JSON.stringify(payload).slice(0, 220);
+}
+
+function requestWithRedirects({
+  url,
+  method = 'GET',
+  headers = {},
+  body = null,
+  timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
+  maxRedirects = 8
+}) {
+  return new Promise((resolve, reject) => {
+    const payload = body == null
+      ? null
+      : Buffer.isBuffer(body)
+        ? body
+        : Buffer.from(String(body));
+
+    const send = (requestUrl, requestMethod, requestBody, redirectsLeft) => {
+      const parsedUrl = new URL(requestUrl);
+      const transport = parsedUrl.protocol === 'http:' ? http : https;
+      const requestHeaders = {
+        'User-Agent': DEFAULT_HTTP_USER_AGENT,
+        ...headers
+      };
+
+      if (requestBody && !Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'content-length')) {
+        requestHeaders['Content-Length'] = String(requestBody.length);
+      }
+
+      const requestOptions = {
+        method: requestMethod,
+        headers: requestHeaders,
+        timeout: timeoutMs
+      };
+
+      const req = transport.request(parsedUrl, requestOptions, (res) => {
+        const statusCode = Number(res.statusCode || 0);
+
+        if (
+          [301, 302, 303, 307, 308].includes(statusCode) &&
+          res.headers.location
+        ) {
+          if (redirectsLeft <= 0) {
+            res.resume();
+            reject(new Error(`Too many redirects while requesting ${url}`));
+            return;
+          }
+
+          const redirectUrl = new URL(res.headers.location, parsedUrl).toString();
+          res.resume();
+
+          let nextMethod = requestMethod;
+          let nextBody = requestBody;
+          if (
+            statusCode === 303 ||
+            ((statusCode === 301 || statusCode === 302) && requestMethod !== 'GET' && requestMethod !== 'HEAD')
+          ) {
+            nextMethod = 'GET';
+            nextBody = null;
+          }
+
+          send(redirectUrl, nextMethod, nextBody, redirectsLeft - 1);
+          return;
+        }
+
+        const chunks = [];
+        res.on('data', (chunk) => {
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          resolve({
+            statusCode,
+            headers: res.headers,
+            body: Buffer.concat(chunks),
+            finalUrl: requestUrl
+          });
+        });
+      });
+
+      req.on('timeout', () => {
+        req.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+      });
+
+      req.on('error', (error) => {
+        reject(error);
+      });
+
+      if (requestBody) {
+        req.write(requestBody);
+      }
+      req.end();
+    };
+
+    send(url, method, payload, maxRedirects);
+  });
+}
+
+async function requestJsonWithRedirects(url, options = {}, context = 'Request') {
+  const response = await requestWithRedirects({ url, ...options });
+  const bodyText = response.body.toString('utf8');
+
+  let payload;
+  try {
+    payload = JSON.parse(bodyText);
+  } catch (error) {
+    throw new Error(`${context} returned invalid JSON (HTTP ${response.statusCode}).`);
+  }
+
+  if (response.statusCode >= 400) {
+    const message = extractLucidaErrorMessage(payload);
+    throw new Error(`${context} failed (HTTP ${response.statusCode}): ${message}`);
+  }
+
+  return { response, payload };
+}
+
+async function requestLucidaJson({
+  apiPath,
+  queryParams = {},
+  method = 'GET',
+  headers = {},
+  body = null,
+  context = 'Lucida request'
+}) {
+  const forcedServer = queryParams && queryParams.force ? queryParams.force : '';
+  const candidateHosts = getLucidaCandidateHosts(forcedServer);
+  const urlsToTry = [
+    ...candidateHosts.map((host) => buildLucidaDirectUrl(host, apiPath, queryParams)),
+    buildLucidaLoadUrl(apiPath, queryParams)
+  ];
+
+  let lastError = null;
+  for (const candidateUrl of urlsToTry) {
+    try {
+      return await requestJsonWithRedirects(candidateUrl, {
+        method,
+        headers,
+        body
+      }, context);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error(`${context} failed.`);
+}
+
+function downloadFileWithRedirects({
+  url,
+  outputDir,
+  fallbackFilename,
+  headers = {},
+  timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
+  maxRedirects = 8,
+  onProgress
+}) {
+  return new Promise((resolve, reject) => {
+    const startDownload = (requestUrl, redirectsLeft) => {
+      const parsedUrl = new URL(requestUrl);
+      const transport = parsedUrl.protocol === 'http:' ? http : https;
+      const requestHeaders = {
+        'User-Agent': DEFAULT_HTTP_USER_AGENT,
+        ...headers
+      };
+
+      const req = transport.request(parsedUrl, { method: 'GET', headers: requestHeaders, timeout: timeoutMs }, (res) => {
+        const statusCode = Number(res.statusCode || 0);
+
+        if (
+          [301, 302, 303, 307, 308].includes(statusCode) &&
+          res.headers.location
+        ) {
+          if (redirectsLeft <= 0) {
+            res.resume();
+            reject(new Error(`Too many redirects while downloading from Lucida.`));
+            return;
+          }
+          const redirectUrl = new URL(res.headers.location, parsedUrl).toString();
+          res.resume();
+          startDownload(redirectUrl, redirectsLeft - 1);
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          res.resume();
+          reject(new Error(`Download request failed with HTTP ${statusCode}.`));
+          return;
+        }
+
+        fs.mkdirSync(outputDir, { recursive: true });
+
+        let resolvedFilename = getFilenameFromContentDisposition(res.headers['content-disposition']);
+        if (!resolvedFilename) {
+          resolvedFilename = fallbackFilename || 'download';
+        }
+        const inferredExtension = inferExtensionFromContentType(res.headers['content-type']);
+        if (!path.extname(resolvedFilename) && inferredExtension) {
+          resolvedFilename += inferredExtension;
+        }
+        resolvedFilename = sanitizeFilename(resolvedFilename) || `download${inferredExtension || ''}`;
+
+        const targetPath = ensureUniqueFilePath(path.join(outputDir, resolvedFilename));
+        const fileStream = fs.createWriteStream(targetPath);
+        const totalBytes = Number.parseInt(String(res.headers['content-length'] || '0'), 10);
+        let downloadedBytes = 0;
+
+        res.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          if (onProgress) {
+            onProgress(downloadedBytes, Number.isFinite(totalBytes) ? totalBytes : 0);
+          }
+        });
+
+        res.on('error', (error) => {
+          fileStream.destroy(error);
+        });
+
+        fileStream.on('error', (error) => {
+          try {
+            if (fs.existsSync(targetPath)) {
+              fs.unlinkSync(targetPath);
+            }
+          } catch (cleanupError) {
+            // Ignore cleanup failures, preserve original error.
+          }
+          reject(error);
+        });
+
+        fileStream.on('finish', () => {
+          fileStream.close(() => {
+            resolve({
+              outputPath: targetPath,
+              contentType: String(res.headers['content-type'] || ''),
+              finalUrl: requestUrl
+            });
+          });
+        });
+
+        res.pipe(fileStream);
+      });
+
+      req.on('timeout', () => {
+        req.destroy(new Error(`Download timed out after ${timeoutMs}ms`));
+      });
+
+      req.on('error', (error) => {
+        reject(error);
+      });
+
+      req.end();
+    };
+
+    startDownload(url, maxRedirects);
+  });
+}
+
+function buildLucidaAccountPreference(sourceUrl) {
+  let country = 'auto';
+  try {
+    const parsedUrl = new URL(sourceUrl);
+    const territory = parsedUrl.searchParams.get('musicTerritory');
+    if (territory && /^[a-z]{2}$/i.test(territory)) {
+      country = territory.toUpperCase();
+    }
+  } catch (error) {
+    // Keep the default region if URL parsing fails.
+  }
+
+  return {
+    type: 'country',
+    id: country
+  };
+}
+
+function convertAudioToMp3(inputPath, outputPath, metadata = {}) {
+  return new Promise((resolve, reject) => {
+    configureFfmpegPath();
+
+    const artist = typeof metadata.artist === 'string' ? metadata.artist.trim() : '';
+    const ffmpegArgs = [
+      '-i', inputPath,
+      '-map', '0:a',
+      '-codec:a', 'libmp3lame',
+      '-b:a', '320k',
+      '-minrate', '320k',
+      '-maxrate', '320k',
+      '-bufsize', '320k',
+      '-ac', '2',
+      '-ar', '48000',
+      '-metadata', `artist=${artist || 'Unknown Artist'}`,
+      '-y',
+      outputPath
+    ];
+
+    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+
+    let errorOutput = '';
+    ffmpegProcess.stderr.on('data', (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    ffmpegProcess.on('error', (error) => {
+      reject(new Error(`Failed to start ffmpeg: ${error.message}`));
+    });
+
+    ffmpegProcess.on('close', (code) => {
+      if (code === 0) {
+        resolve(outputPath);
+        return;
+      }
+      const message = errorOutput.trim() || `ffmpeg exited with code ${code}`;
+      reject(new Error(`MP3 conversion failed: ${message}`));
+    });
+  });
+}
+
+async function fetchLucidaMetadata(sourceUrl) {
+  const normalizedUrl = normalizeMusicUrl(sourceUrl);
+  const metadataPath = `/api/fetch/metadata?url=${encodeURIComponent(normalizedUrl)}`;
+
+  const { payload } = await requestLucidaJson({
+    apiPath: metadataPath,
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': DEFAULT_HTTP_USER_AGENT
+    },
+    context: 'Lucida metadata'
+  });
+
+  if (!payload || payload.success !== true) {
+    throw new Error(`Lucida metadata lookup failed: ${extractLucidaErrorMessage(payload)}`);
+  }
+
+  const artistName = Array.isArray(payload.artists) && payload.artists.length > 0
+    ? payload.artists
+      .map((artist) => artist && artist.name)
+      .filter(Boolean)
+      .join(', ')
+    : 'Unknown Artist';
+
+  const title = payload.title || 'Unknown Track';
+
+  return {
+    title,
+    artist: artistName || 'Unknown Artist',
+    url: normalizedUrl,
+    originalUrl: sourceUrl
+  };
+}
+
+async function fetchLucidaPlaylistTracks(sourceUrl) {
+  const normalizedUrl = normalizeMusicUrl(sourceUrl);
+  const metadataPath = `/api/fetch/metadata?url=${encodeURIComponent(normalizedUrl)}`;
+
+  const { payload } = await requestLucidaJson({
+    apiPath: metadataPath,
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': DEFAULT_HTTP_USER_AGENT
+    },
+    context: 'Lucida playlist metadata'
+  });
+
+  if (!payload || payload.success !== true) {
+    throw new Error(`Playlist lookup failed: ${extractLucidaErrorMessage(payload)}`);
+  }
+
+  if (payload.type !== 'playlist') {
+    throw new Error('The provided URL is not a playlist.');
+  }
+
+  const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+  const preparedTracks = tracks
+    .map((track, index) => {
+      const canonicalUrl = canonicalizeTidalTrackUrl(track && track.url);
+      if (!canonicalUrl) {
+        return null;
+      }
+      const artistName = Array.isArray(track.artists) && track.artists.length > 0
+        ? track.artists
+          .map((artist) => artist && artist.name)
+          .filter(Boolean)
+          .join(', ')
+        : 'Unknown Artist';
+      return {
+        trackNumber: index + 1,
+        url: canonicalUrl,
+        title: (track && track.title) || `Track ${index + 1}`,
+        artist: artistName || 'Unknown Artist'
+      };
+    })
+    .filter(Boolean);
+
+  if (preparedTracks.length === 0) {
+    throw new Error('Playlist contains no downloadable tracks.');
+  }
+
+  return {
+    playlistTitle: payload.title || 'Untitled Playlist',
+    tracks: preparedTracks,
+    originalTrackCount: tracks.length
+  };
+}
+
+async function startLucidaRequest(requestPayload) {
+  const { payload } = await requestLucidaJson({
+    apiPath: '/api/fetch/stream/v2',
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': DEFAULT_HTTP_USER_AGENT
+    },
+    body: JSON.stringify(requestPayload),
+    context: 'Lucida request init'
+  });
+
+  if (!payload || payload.success !== true || !payload.handoff || !payload.name) {
+    throw new Error(`Lucida request init failed: ${extractLucidaErrorMessage(payload)}`);
+  }
+
+  return payload;
+}
+
+async function pollLucidaRequest(handoffId, serverName, onTick) {
+  for (let attempt = 0; attempt < LUCIDA_MAX_POLL_ATTEMPTS; attempt += 1) {
+    const statusPath = `/api/fetch/request/${handoffId}`;
+    const { payload } = await requestLucidaJson({
+      apiPath: statusPath,
+      queryParams: { force: serverName },
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': DEFAULT_HTTP_USER_AGENT
+      },
+      context: 'Lucida status check'
+    });
+
+    if (onTick) {
+      onTick(attempt, payload);
+    }
+
+    if (!payload || payload.success !== true) {
+      throw new Error(`Lucida status check failed: ${extractLucidaErrorMessage(payload)}`);
+    }
+
+    if (payload.status === 'completed') {
+      return payload;
+    }
+
+    if (payload.status === 'error') {
+      throw new Error(`Lucida reported an error: ${extractLucidaErrorMessage(payload)}`);
+    }
+
+    await sleep(LUCIDA_POLL_INTERVAL_MS);
+  }
+
+  throw new Error('Lucida download timed out while waiting for completion.');
+}
+
+async function downloadSongViaLucida(queueItem) {
+  const reportProgress = (value) => {
+    const bounded = Math.max(0, Math.min(100, Number(value) || 0));
+    queueItem.progress = bounded;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('queue-updated', downloadQueue);
+    }
+  };
+
+  const normalizedUrl = normalizeMusicUrl(queueItem.url);
+  queueItem.url = normalizedUrl;
+
+  const requestPayload = {
+    url: normalizedUrl,
+    // Some Lucida FLAC outputs contain malformed metadata blocks that break ffmpeg.
+    // Prefer compatibility-safe output since we convert to MP3 for DJ workflow.
+    metadata: false,
+    compat: true,
+    private: false,
+    handoff: true,
+    account: buildLucidaAccountPreference(normalizedUrl),
+    upload: {
+      enabled: false,
+      service: 'catbox'
+    },
+    downscale: 'original'
+  };
+
+  reportProgress(12);
+  const requestInit = await startLucidaRequest(requestPayload);
+
+  reportProgress(22);
+  await pollLucidaRequest(requestInit.handoff, requestInit.name, (attempt) => {
+    const progressValue = 22 + Math.min(
+      45,
+      Math.floor(((attempt + 1) / LUCIDA_MAX_POLL_ATTEMPTS) * 45)
+    );
+    reportProgress(progressValue);
+  });
+
+  const fallbackFilename = buildFallbackFilename(queueItem);
+  const downloadApiPath = `/api/fetch/request/${requestInit.handoff}/download`;
+  const candidateHosts = getLucidaCandidateHosts(requestInit.name);
+  const downloadCandidates = [
+    ...candidateHosts.map((host) =>
+      buildLucidaDirectUrl(host, downloadApiPath, { force: requestInit.name, redirect: 'true' })
+    ),
+    buildLucidaLoadUrl(downloadApiPath, { force: requestInit.name, redirect: 'true' })
+  ];
+
+  reportProgress(70);
+  let downloadedFile = null;
+  let lastDownloadError = null;
+  for (const candidateUrl of downloadCandidates) {
+    try {
+      downloadedFile = await downloadFileWithRedirects({
+        url: candidateUrl,
+        outputDir: queueItem.downloadPath,
+        fallbackFilename,
+        headers: {
+          Accept: '*/*',
+          'User-Agent': DEFAULT_HTTP_USER_AGENT
+        },
+        onProgress: (downloadedBytes, totalBytes) => {
+          if (totalBytes > 0) {
+            const ratio = downloadedBytes / totalBytes;
+            reportProgress(70 + Math.min(25, Math.floor(ratio * 25)));
+          }
+        }
+      });
+      break;
+    } catch (downloadError) {
+      lastDownloadError = downloadError;
+    }
+  }
+
+  if (!downloadedFile) {
+    throw lastDownloadError || new Error('Lucida download failed.');
+  }
+
+  let outputPath = downloadedFile.outputPath;
+  const outputExtension = path.extname(outputPath).toLowerCase();
+  if (queueItem.format !== 'flac' && outputExtension !== '.mp3') {
+    reportProgress(96);
+    const mp3Path = ensureUniqueFilePath(
+      path.join(path.dirname(outputPath), `${path.basename(outputPath, outputExtension)}.mp3`)
+    );
+    await convertAudioToMp3(outputPath, mp3Path, {
+      artist: queueItem.artist
+    });
+    try {
+      fs.unlinkSync(outputPath);
+    } catch (cleanupError) {
+      console.warn('Could not remove source file after conversion:', cleanupError.message);
+    }
+    outputPath = mp3Path;
+  }
+
+  queueItem.outputPath = outputPath;
+  reportProgress(100);
+}
+
 function fetchSongMetadata(url) {
   return new Promise((resolve, reject) => {
-    const cleanUrl = cleanTidalUrl(url);
+    const cleanUrl = normalizeMusicUrl(url);
     
     https.get(cleanUrl, {
       headers: {
@@ -571,8 +1505,7 @@ async function processQueue() {
   isProcessingQueue = true;
   nextItem.status = 'downloading';
   nextItem.progress = 0;
-  
-  mainWindow.webContents.send('queue-updated', downloadQueue);
+  emitQueueUpdated();
   
   try {
     await downloadSong(nextItem);
@@ -584,7 +1517,7 @@ async function processQueue() {
     nextItem.progress = 0;
   }
   
-  mainWindow.webContents.send('queue-updated', downloadQueue);
+  emitQueueUpdated();
   isProcessingQueue = false;
   
   // Process next item in queue
@@ -592,6 +1525,12 @@ async function processQueue() {
 }
 
 async function downloadSong(queueItem) {
+  const downloadMethod = queueItem.downloadMethod || 'doubledouble';
+  if (downloadMethod === 'lucida') {
+    await downloadSongViaLucida(queueItem);
+    return;
+  }
+
   await runDownloaderWithCaptchaRetry({
     url: queueItem.url,
     format: queueItem.format,
@@ -603,11 +1542,205 @@ async function downloadSong(queueItem) {
         const progressMatch = text.match(/Progress: ([\d.]+)%/);
         if (progressMatch) {
           queueItem.progress = parseFloat(progressMatch[1]);
-          mainWindow.webContents.send('queue-updated', downloadQueue);
+          emitQueueUpdated();
         }
       }
     }
   });
+}
+
+function emitQueueUpdated() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('queue-updated', downloadQueue);
+  }
+}
+
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalSize = 0;
+    req.on('data', (chunk) => {
+      totalSize += chunk.length;
+      if (totalSize > 1024 * 1024) {
+        reject(new Error('Request body is too large.'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (error) {
+        reject(new Error('Invalid JSON body.'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function writeJsonResponse(res, statusCode, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  });
+  res.end(body);
+}
+
+async function addToQueueInternal({ url, format, downloadPath, downloadMethod = 'doubledouble' }) {
+  const normalizedUrl = normalizeMusicUrl(url);
+  console.log('Fetching metadata for:', normalizedUrl, 'method:', downloadMethod);
+
+  if (isTidalPlaylistUrl(normalizedUrl)) {
+    const playlistData = await fetchLucidaPlaylistTracks(normalizedUrl);
+    const queueBaseId = Date.now();
+    const playlistItems = playlistData.tracks.map((track, index) => ({
+      id: `${queueBaseId}-${index}`,
+      title: track.title,
+      artist: track.artist,
+      url: track.url,
+      originalUrl: normalizedUrl,
+      format,
+      downloadMethod,
+      downloadPath,
+      status: 'queued',
+      addedAt: new Date().toISOString(),
+      progress: 0
+    }));
+
+    downloadQueue.push(...playlistItems);
+    emitQueueUpdated();
+    processQueue();
+
+    return {
+      success: true,
+      item: playlistItems[0],
+      isPlaylist: true,
+      playlistTitle: playlistData.playlistTitle,
+      addedCount: playlistItems.length,
+      skippedCount: Math.max(0, playlistData.originalTrackCount - playlistItems.length)
+    };
+  }
+
+  let metadata;
+  if (downloadMethod === 'lucida') {
+    try {
+      metadata = await fetchLucidaMetadata(normalizedUrl);
+    } catch (lucidaMetadataError) {
+      console.warn('Lucida metadata lookup failed, falling back to HTML metadata scrape:', lucidaMetadataError.message);
+      metadata = await fetchSongMetadata(normalizedUrl);
+    }
+  } else {
+    metadata = await fetchSongMetadata(normalizedUrl);
+  }
+
+  const queueItem = {
+    id: Date.now().toString(),
+    ...metadata,
+    format,
+    downloadMethod,
+    downloadPath,
+    status: 'queued',
+    addedAt: new Date().toISOString(),
+    progress: 0
+  };
+
+  downloadQueue.push(queueItem);
+  emitQueueUpdated();
+  processQueue();
+
+  return { success: true, item: queueItem };
+}
+
+async function startLocalIngestServer() {
+  if (localIngestServer) {
+    return;
+  }
+
+  localIngestServer = http.createServer(async (req, res) => {
+    if (!req.url) {
+      writeJsonResponse(res, 400, { success: false, error: 'Missing request URL.' });
+      return;
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type'
+      });
+      res.end();
+      return;
+    }
+
+    const requestUrl = new URL(req.url, `http://${LOCAL_INGEST_HOST}:${LOCAL_INGEST_PORT}`);
+    if (req.method === 'GET' && requestUrl.pathname === '/api/health') {
+      const prefs = readPreferencesSync();
+      writeJsonResponse(res, 200, {
+        success: true,
+        service: 'tidal-downloader-local-api',
+        queueLength: downloadQueue.length,
+        defaults: {
+          download_method: prefs.download_method || 'doubledouble',
+          format: prefs.format || 'mp3_320',
+          download_path: prefs.download_path || getDefaultPreferences().download_path
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/queue/add') {
+      try {
+        const body = await parseJsonBody(req);
+        const incomingUrl = typeof body.url === 'string' ? body.url.trim() : '';
+        if (!incomingUrl) {
+          writeJsonResponse(res, 400, { success: false, error: 'Missing "url".' });
+          return;
+        }
+
+        const prefs = readPreferencesSync();
+        const result = await addToQueueInternal({
+          url: incomingUrl,
+          format: typeof body.format === 'string' && body.format.trim()
+            ? body.format.trim()
+            : 'mp3_320',
+          downloadPath: typeof body.downloadPath === 'string' && body.downloadPath.trim()
+            ? body.downloadPath.trim()
+            : (prefs.download_path || getDefaultPreferences().download_path),
+          downloadMethod: typeof body.downloadMethod === 'string' && body.downloadMethod.trim()
+            ? body.downloadMethod.trim()
+            : 'lucida'
+        });
+        writeJsonResponse(res, 200, result);
+      } catch (error) {
+        const message = error && error.message ? error.message : 'Failed to add to queue.';
+        const badRequest = message === 'Invalid JSON body.' || message === 'Request body is too large.';
+        writeJsonResponse(res, badRequest ? 400 : 500, { success: false, error: message });
+      }
+      return;
+    }
+
+    writeJsonResponse(res, 404, { success: false, error: 'Not found.' });
+  });
+
+  await new Promise((resolve, reject) => {
+    localIngestServer.once('error', reject);
+    localIngestServer.listen(LOCAL_INGEST_PORT, LOCAL_INGEST_HOST, () => {
+      localIngestServer.removeListener('error', reject);
+      resolve();
+    });
+  });
+
+  console.log(`Local ingest API listening at http://${LOCAL_INGEST_HOST}:${LOCAL_INGEST_PORT}`);
 }
 
 function createWindow() {
@@ -677,9 +1810,18 @@ function createWindow() {
 }
 
 // App event handlers
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   console.log('App is ready, creating window...');
   createWindow();
+  try {
+    await startLocalIngestServer();
+  } catch (error) {
+    if (error && error.code === 'EADDRINUSE') {
+      console.warn(`Local ingest API is already running on ${LOCAL_INGEST_HOST}:${LOCAL_INGEST_PORT}.`);
+    } else {
+      console.error('Failed to start local ingest API:', error);
+    }
+  }
 }).catch(err => {
   console.error('Failed to create window:', err);
 });
@@ -696,23 +1838,20 @@ app.on('activate', () => {
   }
 });
 
+app.on('before-quit', () => {
+  if (localIngestServer) {
+    try {
+      localIngestServer.close();
+    } catch (error) {
+      console.warn('Error closing local ingest API:', error.message);
+    }
+    localIngestServer = null;
+  }
+});
+
 // IPC handlers
 ipcMain.handle('get-preferences', async () => {
-  try {
-    if (fs.existsSync(prefsPath)) {
-      const data = fs.readFileSync(prefsPath, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('Error reading preferences:', error);
-  }
-  
-  return {
-    download_path: path.join(os.homedir(), 'Downloads'),
-    format: 'mp3_320',
-    last_url: '',
-    download_method: 'doubledouble' // 'doubledouble' or 'lucida'
-  };
+  return readPreferencesSync();
 });
 
 ipcMain.handle('save-preferences', async (event, prefs) => {
@@ -754,43 +1893,10 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
   }
 });
 
-ipcMain.handle('open-lucida', async (event, url) => {
-  try {
-    const lucidaUrl = buildLucidaUrl(url);
-    console.log('Opening lucida.to URL:', lucidaUrl);
-    await shell.openExternal(lucidaUrl);
-    return { success: true, url: lucidaUrl };
-  } catch (error) {
-    console.error('Error opening lucida.to:', error);
-    return { success: false, error: error.message };
-  }
-});
-
 // Queue management handlers
-ipcMain.handle('add-to-queue', async (event, { url, format, downloadPath }) => {
+ipcMain.handle('add-to-queue', async (event, { url, format, downloadPath, downloadMethod = 'doubledouble' }) => {
   try {
-    console.log('Fetching metadata for:', url);
-    const metadata = await fetchSongMetadata(url);
-    
-    const queueItem = {
-      id: Date.now().toString(),
-      ...metadata,
-      format,
-      downloadPath,
-      status: 'queued',
-      addedAt: new Date().toISOString(),
-      progress: 0
-    };
-    
-    downloadQueue.push(queueItem);
-    
-    // Notify frontend about queue update
-    mainWindow.webContents.send('queue-updated', downloadQueue);
-    
-    // Start processing queue if not already processing
-    processQueue();
-    
-    return { success: true, item: queueItem };
+    return await addToQueueInternal({ url, format, downloadPath, downloadMethod });
   } catch (error) {
     console.error('Error adding to queue:', error);
     return { success: false, error: error.message };
@@ -805,7 +1911,7 @@ ipcMain.handle('remove-from-queue', async (event, itemId) => {
   const index = downloadQueue.findIndex(item => item.id === itemId);
   if (index !== -1) {
     downloadQueue.splice(index, 1);
-    mainWindow.webContents.send('queue-updated', downloadQueue);
+    emitQueueUpdated();
     return { success: true };
   }
   return { success: false, error: 'Item not found' };
@@ -817,7 +1923,7 @@ ipcMain.handle('retry-download', async (event, itemId) => {
     item.status = 'queued';
     item.progress = 0;
     item.error = null;
-    mainWindow.webContents.send('queue-updated', downloadQueue);
+    emitQueueUpdated();
     processQueue();
     return { success: true };
   }

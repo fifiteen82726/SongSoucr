@@ -200,8 +200,7 @@ function App() {
       return false;
     }
 
-    // Download path not required for lucida.to method
-    if (downloadMethod !== 'lucida' && !downloadPath.trim()) {
+    if (!downloadPath.trim()) {
       setStatus('❌ Please select a download folder');
       return false;
     }
@@ -266,25 +265,6 @@ function App() {
       return;
     }
 
-    // If lucida.to is selected, open in browser instead
-    if (downloadMethod === 'lucida') {
-      setStatus('🌐 Opening lucida.to in your browser...');
-      try {
-        const result = await window.electronAPI.openLucida(url.trim());
-        if (result.success) {
-          setStatus('✅ Opened lucida.to! Download the track from your browser.');
-          setUrl(''); // Clear the input after opening
-        } else {
-          setStatus(`❌ Failed to open lucida.to: ${result.error}`);
-        }
-      } catch (error) {
-        console.error('Error opening lucida.to:', error);
-        setStatus(`❌ Error opening lucida.to: ${error.message}`);
-      }
-      return;
-    }
-
-    // Original doubledouble logic
     setIsAddingToQueue(true);
     setStatus('🔍 Fetching song information...');
 
@@ -292,12 +272,20 @@ function App() {
       const result = await window.electronAPI.addToQueue({
         url: url.trim(),
         format,
-        downloadPath
+        downloadPath,
+        downloadMethod
       });
 
       if (result.success) {
         setUrl(''); // Clear the input after successful addition
-        setStatus(`✅ Added "${result.item.title}" by ${result.item.artist} to queue!`);
+        if (result.isPlaylist) {
+          const skippedSuffix = result.skippedCount > 0
+            ? ` (${result.skippedCount} skipped)`
+            : '';
+          setStatus(`✅ Added ${result.addedCount} tracks from "${result.playlistTitle}" to queue${skippedSuffix}!`);
+        } else {
+          setStatus(`✅ Added "${result.item.title}" by ${result.item.artist} to queue!`);
+        }
       } else {
         setStatus(`❌ Failed to add to queue: ${result.error}`);
       }
@@ -383,13 +371,11 @@ function App() {
               disabled={isAddingToQueue}
             />
 
-            {downloadMethod !== 'lucida' && (
-              <LocationSection
-                downloadPath={downloadPath}
-                setDownloadPath={setDownloadPath}
-                disabled={isAddingToQueue}
-              />
-            )}
+            <LocationSection
+              downloadPath={downloadPath}
+              setDownloadPath={setDownloadPath}
+              disabled={isAddingToQueue}
+            />
 
             <div className="section status-section">
               <div className="status-text">
@@ -401,12 +387,10 @@ function App() {
               <button
                 className="add-to-queue-btn"
                 onClick={handleAddToQueue}
-                disabled={isAddingToQueue || !url.trim() || (downloadMethod !== 'lucida' && !downloadPath.trim())}
+                disabled={isAddingToQueue || !url.trim() || !downloadPath.trim()}
               >
                 {isAddingToQueue
                   ? '🔍 Fetching Info...'
-                  : downloadMethod === 'lucida'
-                  ? '🌐 Open in Lucida.to'
                   : '➕ Add to Queue'}
               </button>
             </div>

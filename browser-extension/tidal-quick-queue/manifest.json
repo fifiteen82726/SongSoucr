@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Tidal Quick Queue",
+  "version": "0.1.0",
+  "description": "Send the current TIDAL URL to local Tidal Downloader queue with one click.",
+  "action": {
+    "default_title": "Tidal Quick Queue"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://tidal.com/*",
+    "https://*.tidal.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://tidal.com/*",
+        "https://*.tidal.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
