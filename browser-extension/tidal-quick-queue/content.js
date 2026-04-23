@@ -167,6 +167,13 @@
         slot: amazonRow.querySelector('music-button[slot="contextMenu"]') ? 'contextMenu' : 'buttons'
       };
     }
+    const amazonTextRow = element.closest('music-text-row');
+    if (amazonTextRow) {
+      return {
+        node: amazonTextRow,
+        slot: amazonTextRow.querySelector('music-button[slot="contextMenu"]') ? 'contextMenu' : 'buttons'
+      };
+    }
 
     const titleContainer = element.closest(
       '[data-test="footer-track-title"], [data-test="artist-name"], [data-test="title"]'
@@ -339,6 +346,49 @@
     });
   }
 
+  function readRowHref(row) {
+    if (!row) {
+      return null;
+    }
+    return (
+      row.getAttribute('primary-href') ||
+      row.getAttribute('secondary-href-2') ||
+      row.primaryHref ||
+      row.secondaryHref2 ||
+      row.querySelector('.content .col1 a[href]')?.getAttribute('href') ||
+      row.querySelector('.content .col3 a[href]')?.getAttribute('href') ||
+      null
+    );
+  }
+
+  function upsertButtonsForAmazonTextRows() {
+    if (!AMAZON_HOST_RE.test(window.location.hostname)) {
+      return;
+    }
+
+    const rows = document.querySelectorAll('music-text-row');
+    if (!rows.length) {
+      return;
+    }
+
+    const nowPlayingUrl = resolveAmazonNowPlayingUrl();
+    const pageFallbackUrl = normalizeTrackUrl(window.location.href);
+
+    rows.forEach((row) => {
+      let normalizedUrl = normalizeTrackUrl(readRowHref(row));
+
+      if (!normalizedUrl && (row.getAttribute('icon-name') || '').match(/^(pause|resume)$/i)) {
+        normalizedUrl = nowPlayingUrl;
+      }
+
+      if (!normalizedUrl) {
+        normalizedUrl = pageFallbackUrl;
+      }
+
+      upsertButtonForTarget(row, normalizedUrl);
+    });
+  }
+
   function resolveAmazonNowPlayingUrl() {
     if (!AMAZON_HOST_RE.test(window.location.hostname)) {
       return null;
@@ -433,6 +483,7 @@
     upsertButtonsForTrackLinks();
     upsertButtonsForTrackRows();
     upsertButtonsForAmazonRows();
+    upsertButtonsForAmazonTextRows();
     upsertButtonForAmazonNowPlaying();
   }
 
