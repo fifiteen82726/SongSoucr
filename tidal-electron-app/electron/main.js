@@ -797,6 +797,33 @@ function extractLucidaErrorMessage(payload) {
   return JSON.stringify(payload).slice(0, 220);
 }
 
+function extractHttpErrorMessageFromText(statusCode, headers = {}, bodyText = '') {
+  const normalizedText = String(bodyText || '').replace(/\s+/g, ' ').trim();
+  const cfMitigated = String(headers['cf-mitigated'] || '').toLowerCase();
+
+  if (
+    statusCode === 403 &&
+    (
+      cfMitigated === 'challenge' ||
+      normalizedText.includes('Just a moment...') ||
+      normalizedText.includes('Enable JavaScript and cookies to continue') ||
+      normalizedText.includes('/cdn-cgi/challenge-platform/')
+    )
+  ) {
+    return 'Lucida is blocking this request behind a Cloudflare challenge. The endpoint now requires browser JavaScript/cookies, so in-app server-side Lucida requests cannot proceed.';
+  }
+
+  if (statusCode === 404 && normalizedText.includes('404 Not Found')) {
+    return 'Lucida endpoint returned 404 Not Found.';
+  }
+
+  if (!normalizedText) {
+    return `HTTP ${statusCode}`;
+  }
+
+  return normalizedText.slice(0, 220);
+}
+
 function requestWithRedirects({
   url,
   method = 'GET',
@@ -900,7 +927,8 @@ async function requestJsonWithRedirects(url, options = {}, context = 'Request') 
   try {
     payload = JSON.parse(bodyText);
   } catch (error) {
-    throw new Error(`${context} returned invalid JSON (HTTP ${response.statusCode}).`);
+    const message = extractHttpErrorMessageFromText(response.statusCode, response.headers, bodyText);
+    throw new Error(`${context} failed (HTTP ${response.statusCode}): ${message}`);
   }
 
   if (response.statusCode >= 400) {
