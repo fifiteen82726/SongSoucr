@@ -1,10 +1,23 @@
 (function initTidalQuickQueueInlineButtons() {
-  const TRACK_LINK_SELECTOR = 'a[href*="/track/"]';
+  const TRACK_LINK_SELECTOR = 'a[href*="/track/"], a[href*="trackAsin="]';
   const INLINE_BUTTON_CLASS = 'tqq-inline-button';
   const INLINE_BUTTON_FLAG = 'tqqButtonBound';
   const TOAST_ID = 'tqq-toast';
   const VALID_PATH_RE = /^\/(?:browse\/)?(track|album|playlist|video)\//i;
+  const TRACK_ID_RE = /(?:^|-)track-(\d+)(?:-|$)/i;
+  const AMAZON_HOST_RE = /(^|\.)music\.amazon\.com$/i;
+  const AMAZON_ALLOWED_PATH_RE = /^\/(?:albums|playlists)\//i;
+  const ROW_SELECTOR = [
+    '[data-test^="tracklist-row"]',
+    '[class*="rowContainer"]',
+    '[role="row"]',
+    'article',
+    'li',
+    'tr',
+    'td'
+  ].join(', ');
   let activeRequests = 0;
+  let scanScheduled = false;
 
   function isVisible(el) {
     if (!el) {
@@ -57,6 +70,70 @@
     }
   }
 
+  function normalizeAmazonUrl(rawUrl) {
+    if (!rawUrl) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(rawUrl, window.location.origin);
+      if (!AMAZON_HOST_RE.test(parsed.hostname)) {
+        return null;
+      }
+
+      if (!AMAZON_ALLOWED_PATH_RE.test(parsed.pathname || '/')) {
+        return null;
+      }
+
+      const nextSearch = new URLSearchParams();
+      ['marketplaceId', 'musicTerritory', 'trackAsin'].forEach((key) => {
+        const value = parsed.searchParams.get(key);
+        if (value) {
+          nextSearch.set(key, value);
+        }
+      });
+
+      parsed.protocol = 'https:';
+      parsed.hostname = 'music.amazon.com';
+      parsed.search = nextSearch.toString();
+      parsed.hash = '';
+      return parsed.toString();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function normalizeTrackUrl(rawUrl) {
+    if (!rawUrl) {
+      return null;
+    }
+
+    const absoluteUrl = (() => {
+      try {
+        return new URL(rawUrl, window.location.origin).toString();
+      } catch (error) {
+        return rawUrl;
+      }
+    })();
+
+    return normalizeTidalUrl(absoluteUrl) || normalizeAmazonUrl(absoluteUrl);
+  }
+
+  function buildTrackUrlFromId(trackId) {
+    if (!trackId) {
+      return null;
+    }
+    return `https://tidal.com/track/${trackId}`;
+  }
+
+  function extractTrackId(value) {
+    if (!value) {
+      return null;
+    }
+    const match = String(value).match(TRACK_ID_RE);
+    return match ? match[1] : null;
+  }
+
   function ensureToast() {
     let toast = document.getElementById(TOAST_ID);
     if (toast) {
@@ -82,18 +159,41 @@
     }, 2600);
   }
 
-  function findAttachNode(anchor) {
-    const row = anchor.closest('[role="row"], article, li, div');
+  function getAttachTarget(element) {
+    const amazonRow = element.closest('music-image-row');
+    if (amazonRow) {
+      return {
+        node: amazonRow,
+        slot: amazonRow.querySelector('music-button[slot="contextMenu"]') ? 'contextMenu' : 'buttons'
+      };
+    }
+
+    const titleContainer = element.closest(
+      '[data-test="footer-track-title"], [data-test="artist-name"], [data-test="title"]'
+    );
+    if (titleContainer) {
+      return { node: titleContainer };
+    }
+
+    const row = element.closest(ROW_SELECTOR);
     if (row) {
+      const actionColumn = row.querySelector(
+        '[class*="buttonColumn"], [class*="actions"], [class*="actionContainer"]'
+      );
+      if (actionColumn) {
+        return { node: actionColumn };
+      }
+
       const actionButtons = row.querySelectorAll('button');
       if (actionButtons.length > 0) {
         const lastButton = actionButtons[actionButtons.length - 1];
         if (lastButton && lastButton.parentElement) {
-          return lastButton.parentElement;
+          return { node: lastButton.parentElement };
         }
       }
     }
-    return anchor.parentElement || anchor;
+
+    return { node: element.parentElement || element };
   }
 
   function setBusyState(button, busy) {
@@ -146,7 +246,7 @@
     );
   }
 
-  function buildInlineButton(normalizedUrl) {
+  function buildInlineButton(normalizedUrl, slotName) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = INLINE_BUTTON_CLASS;
@@ -157,57 +257,231 @@
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      sendTrackToQueue(button, normalizedUrl);
+      sendTrackToQueue(button, button.dataset.trackUrl);
     });
+    if (slotName) {
+      button.setAttribute('slot', slotName);
+    }
     return button;
+  }
+
+  function updateInlineButton(button, normalizedUrl) {
+    if (!button || !normalizedUrl) {
+      return;
+    }
+    button.dataset.trackUrl = normalizedUrl;
+    setBusyState(button, false);
+  }
+
+  function upsertButtonInNode(attachNode, normalizedUrl, slotName) {
+    if (!attachNode || !normalizedUrl) {
+      return;
+    }
+
+    const existing = attachNode.querySelector(`.${INLINE_BUTTON_CLASS}`);
+    if (existing) {
+      updateInlineButton(existing, normalizedUrl);
+      return;
+    }
+
+    const button = buildInlineButton(normalizedUrl, slotName);
+    attachNode.appendChild(button);
+  }
+
+  function upsertButtonForTarget(target, normalizedUrl) {
+    if (!target || !normalizedUrl || !isVisible(target)) {
+      return;
+    }
+
+    const attachTarget = getAttachTarget(target);
+    const attachNode = attachTarget && attachTarget.node;
+    if (!attachNode) {
+      return;
+    }
+
+    upsertButtonInNode(attachNode, normalizedUrl, attachTarget.slot);
   }
 
   function upsertButtonsForTrackLinks() {
     const anchors = document.querySelectorAll(TRACK_LINK_SELECTOR);
     anchors.forEach((anchor) => {
-      if (!isVisible(anchor)) {
-        return;
-      }
-
-      const normalizedUrl = normalizeTidalUrl(anchor.href);
-      if (!normalizedUrl) {
-        return;
-      }
-
-      const attachNode = findAttachNode(anchor);
-      if (!attachNode) {
-        return;
-      }
-
-      const existing = attachNode.querySelector(`${'.' + INLINE_BUTTON_CLASS}[data-track-url="${normalizedUrl}"]`);
-      if (existing) {
-        return;
-      }
-
-      const button = buildInlineButton(normalizedUrl);
-      attachNode.appendChild(button);
+      const normalizedUrl = normalizeTrackUrl(anchor.href);
+      upsertButtonForTarget(anchor, normalizedUrl);
     });
+  }
+
+  function upsertButtonsForTrackRows() {
+    const rowTriggers = document.querySelectorAll(
+      '[data-test^="image-container-track-"], [data-test*="tracklist-id-"][data-test$="-context-menu-button"]'
+    );
+
+    rowTriggers.forEach((trigger) => {
+      const trackId =
+        extractTrackId(trigger.getAttribute('data-test')) ||
+        extractTrackId(trigger.dataset.test);
+      if (!trackId) {
+        return;
+      }
+
+      const normalizedUrl = buildTrackUrlFromId(trackId);
+      upsertButtonForTarget(trigger, normalizedUrl);
+    });
+  }
+
+  function upsertButtonsForAmazonRows() {
+    const rows = document.querySelectorAll('music-image-row[primary-href*="trackAsin="]');
+
+    rows.forEach((row) => {
+      const primaryHref = row.getAttribute('primary-href');
+      const fallbackHref = row.querySelector('.content .col1 a[href*="trackAsin="]')?.getAttribute('href');
+      const normalizedUrl = normalizeTrackUrl(primaryHref || fallbackHref);
+      upsertButtonForTarget(row, normalizedUrl);
+    });
+  }
+
+  function resolveAmazonNowPlayingUrl() {
+    if (!AMAZON_HOST_RE.test(window.location.hostname)) {
+      return null;
+    }
+
+    const locationUrl = normalizeTrackUrl(window.location.href);
+    if (locationUrl && locationUrl.includes('trackAsin=')) {
+      return locationUrl;
+    }
+
+    const miniPlayer = document.querySelector('#miniNPVTrackInfo');
+    if (!miniPlayer) {
+      return null;
+    }
+
+    const directCandidates = [
+      miniPlayer.getAttribute('primary-href'),
+      miniPlayer.getAttribute('secondary-href-2'),
+      miniPlayer.querySelector('a[href*="trackAsin="]')?.getAttribute('href')
+    ];
+    for (const candidate of directCandidates) {
+      const normalized = normalizeTrackUrl(candidate);
+      if (normalized && normalized.includes('trackAsin=')) {
+        return normalized;
+      }
+    }
+
+    const activeRowIcon = document.querySelector('music-image-row music-icon[name="equalizeron"]');
+    if (activeRowIcon) {
+      const activeRow = activeRowIcon.closest('music-image-row');
+      const activeRowUrl = normalizeTrackUrl(
+        activeRow?.getAttribute('primary-href') ||
+        activeRow?.querySelector('.content .col1 a[href*="trackAsin="]')?.getAttribute('href')
+      );
+      if (activeRowUrl) {
+        return activeRowUrl;
+      }
+    }
+
+    const nowPlayingTitle = (miniPlayer.getAttribute('primary-text') || '').trim().toLowerCase();
+    const nowPlayingArtist = (miniPlayer.getAttribute('secondary-text') || '').trim().toLowerCase();
+    if (!nowPlayingTitle) {
+      return null;
+    }
+
+    const rows = document.querySelectorAll('music-image-row[primary-href*="trackAsin="]');
+    for (const row of rows) {
+      const rowTitle = (row.getAttribute('primary-text') || '').trim().toLowerCase();
+      if (!rowTitle || rowTitle !== nowPlayingTitle) {
+        continue;
+      }
+
+      const rowArtist = (
+        row.getAttribute('secondary-text-1') ||
+        row.getAttribute('secondary-text') ||
+        ''
+      ).trim().toLowerCase();
+      if (nowPlayingArtist && rowArtist && rowArtist !== nowPlayingArtist) {
+        continue;
+      }
+
+      const normalized = normalizeTrackUrl(
+        row.getAttribute('primary-href') ||
+        row.querySelector('.content .col1 a[href*="trackAsin="]')?.getAttribute('href')
+      );
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  function upsertButtonForAmazonNowPlaying() {
+    const miniPlayer = document.querySelector('#miniNPVTrackInfo');
+    if (!miniPlayer || !isVisible(miniPlayer)) {
+      return;
+    }
+
+    const normalizedUrl = resolveAmazonNowPlayingUrl();
+    if (!normalizedUrl) {
+      return;
+    }
+
+    const controlsRow = miniPlayer.parentElement;
+    const contextButton = controlsRow?.querySelector('music-button[icon-name="more"]');
+    const attachNode = (contextButton && contextButton.parentElement) || controlsRow || miniPlayer;
+    upsertButtonInNode(attachNode, normalizedUrl);
   }
 
   function runOnce() {
     upsertButtonsForTrackLinks();
+    upsertButtonsForTrackRows();
+    upsertButtonsForAmazonRows();
+    upsertButtonForAmazonNowPlaying();
+  }
+
+  function scheduleRun() {
+    if (scanScheduled) {
+      return;
+    }
+    scanScheduled = true;
+    requestAnimationFrame(() => {
+      scanScheduled = false;
+      runOnce();
+    });
   }
 
   function watchDomChanges() {
-    const observer = new MutationObserver(() => {
-      runOnce();
+    const observer = new MutationObserver((mutations) => {
+      const shouldRun = mutations.some((mutation) => {
+        if (mutation.type !== 'childList') {
+          return false;
+        }
+
+        const addedNodes = Array.from(mutation.addedNodes || []);
+        return addedNodes.some((node) => {
+          if (!(node instanceof Element)) {
+            return false;
+          }
+          if (node.id === TOAST_ID || node.classList.contains(INLINE_BUTTON_CLASS)) {
+            return false;
+          }
+          if (node.querySelector && node.querySelector(`#${TOAST_ID}, .${INLINE_BUTTON_CLASS}`)) {
+            return false;
+          }
+          return true;
+        });
+      });
+
+      if (shouldRun) {
+        scheduleRun();
+      }
     });
     observer.observe(document.documentElement || document.body, {
       subtree: true,
-      childList: true,
-      attributes: true
+      childList: true
     });
   }
 
   function bootstrap() {
     runOnce();
     watchDomChanges();
-    setInterval(runOnce, 1200);
   }
 
   if (document.readyState === 'loading') {
