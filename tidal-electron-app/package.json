@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build && cp electron/main.js build/electron.js && cp electron/preload.js build/preload.js",
+    "build": "./node_modules/.bin/react-scripts build && cp electron/main.js build/electron.js && cp electron/preload.js build/preload.js",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron": "electron .",
@@ -15,7 +15,8 @@
     "build-electron": "yarn build && electron-builder",
     "dist": "yarn build && electron-builder --publish=never",
     "pack": "yarn build && electron-builder --dir",
-    "dmg": "yarn build && electron-builder --mac"
+    "dmg": "yarn dmg:unsigned",
+    "dmg:unsigned": "yarn build && CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --mac dmg --arm64 --publish=never"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -41,21 +42,26 @@
     ],
     "extraResources": [
       {
-        "from": "../binaries/tidal-downloader",
-        "to": "binaries/tidal-downloader"
+        "from": "../binaries/tidal-downloader-arm64",
+        "to": "binaries/tidal-downloader-arm64"
       },
       {
-        "from": "../binaries/ffmpeg",
+        "from": "../binaries/ffmpeg-arm64",
+        "to": "binaries/ffmpeg-arm64"
+      },
+      {
+        "from": "../binaries/ffmpeg-arm64",
         "to": "binaries/ffmpeg"
       }
     ],
     "mac": {
       "category": "public.app-category.music",
+      "identity": null,
+      "artifactName": "Tidal-Downloader-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "x64",
             "arm64"
           ]
         }
