@@ -1,12 +1,15 @@
 (function initTidalQuickQueueInlineButtons() {
-  const TRACK_LINK_SELECTOR = 'a[href*="/track/"], a[href*="trackAsin="]';
+  const TRACK_LINK_SELECTOR = 'a[href*="/track/"], a[href*="/tracks/"], a[href*="trackAsin="]';
   const INLINE_BUTTON_CLASS = 'tqq-inline-button';
+  const NOW_PLAYING_BUTTON_CLASS = 'tqq-now-playing-button';
+  const NOW_PLAYING_CONTROL_CLASS = 'tqq-now-playing-control';
   const INLINE_BUTTON_FLAG = 'tqqButtonBound';
   const TOAST_ID = 'tqq-toast';
   const VALID_PATH_RE = /^\/(?:browse\/)?(track|album|playlist|video)\//i;
   const TRACK_ID_RE = /(?:^|-)track-(\d+)(?:-|$)/i;
   const AMAZON_HOST_RE = /(^|\.)music\.amazon\.com$/i;
-  const AMAZON_ALLOWED_PATH_RE = /^\/(?:albums|playlists)\//i;
+  const AMAZON_ALLOWED_PATH_RE = /^\/(?:albums|playlists|tracks)\//i;
+  const AMAZON_TRACK_PATH_RE = /^\/tracks\/([a-z0-9]+)/i;
   const ROW_SELECTOR = [
     '[data-test^="tracklist-row"]',
     '[class*="rowContainer"]',
@@ -85,8 +88,18 @@
         return null;
       }
 
+      const trackAsin = parsed.searchParams.get('trackAsin');
+      const trackPathMatch = (parsed.pathname || '').match(AMAZON_TRACK_PATH_RE);
+      if (trackAsin && /^[a-z0-9]+$/i.test(trackAsin)) {
+        parsed.pathname = `/tracks/${trackAsin}`;
+      } else if (trackPathMatch && trackPathMatch[1]) {
+        parsed.pathname = `/tracks/${trackPathMatch[1]}`;
+      } else {
+        return null;
+      }
+
       const nextSearch = new URLSearchParams();
-      ['marketplaceId', 'musicTerritory', 'trackAsin'].forEach((key) => {
+      ['marketplaceId', 'musicTerritory'].forEach((key) => {
         const value = parsed.searchParams.get(key);
         if (value) {
           nextSearch.set(key, value);
@@ -253,6 +266,23 @@
     );
   }
 
+  function handleInlineButtonClick(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const button = target.closest(`.${INLINE_BUTTON_CLASS}`);
+    if (!button) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    sendTrackToQueue(button, button.dataset.trackUrl);
+  }
+
   function buildInlineButton(normalizedUrl, slotName) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -261,11 +291,6 @@
     button.textContent = '⇣';
     button.dataset.trackUrl = normalizedUrl;
     button.dataset[INLINE_BUTTON_FLAG] = '1';
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      sendTrackToQueue(button, button.dataset.trackUrl);
-    });
     if (slotName) {
       button.setAttribute('slot', slotName);
     }
@@ -395,7 +420,7 @@
     }
 
     const locationUrl = normalizeTrackUrl(window.location.href);
-    if (locationUrl && locationUrl.includes('trackAsin=')) {
+    if (locationUrl && AMAZON_TRACK_PATH_RE.test(new URL(locationUrl).pathname)) {
       return locationUrl;
     }
 
@@ -411,7 +436,7 @@
     ];
     for (const candidate of directCandidates) {
       const normalized = normalizeTrackUrl(candidate);
-      if (normalized && normalized.includes('trackAsin=')) {
+      if (normalized && AMAZON_TRACK_PATH_RE.test(new URL(normalized).pathname)) {
         return normalized;
       }
     }
@@ -462,6 +487,76 @@
     return null;
   }
 
+  function findAmazonNowPlayingControls(miniPlayer) {
+    let searchRoot = miniPlayer && miniPlayer.parentElement;
+
+    while (searchRoot && searchRoot !== document.body) {
+      let playerBranch = miniPlayer;
+      while (playerBranch.parentElement && playerBranch.parentElement !== searchRoot) {
+        playerBranch = playerBranch.parentElement;
+      }
+
+      const siblings = [];
+      for (let sibling = playerBranch.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+        siblings.push(sibling);
+      }
+      for (let sibling = playerBranch.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+        siblings.push(sibling);
+      }
+
+      for (const sibling of siblings) {
+        const favoriteButton = sibling.querySelector('music-button[icon-name="favorite"]');
+        const contextButton = sibling.querySelector('music-button[icon-name="more"]');
+        const favoriteContainer = favoriteButton && favoriteButton.parentElement;
+        const contextContainer = contextButton && contextButton.parentElement;
+
+        if (favoriteContainer && favoriteContainer === contextContainer) {
+          return {
+            group: favoriteContainer,
+            contextContainer: contextButton
+          };
+        }
+
+        if (favoriteContainer && contextContainer && favoriteContainer.parentElement === contextContainer.parentElement) {
+          return {
+            group: favoriteContainer.parentElement,
+            contextContainer
+          };
+        }
+      }
+
+      searchRoot = searchRoot.parentElement;
+    }
+
+    return null;
+  }
+
+  function upsertAmazonNowPlayingButton(controls, normalizedUrl) {
+    if (!controls || !normalizedUrl) {
+      return;
+    }
+
+    let control = Array.from(controls.group.children).find((child) =>
+      child.classList && child.classList.contains(NOW_PLAYING_CONTROL_CLASS)
+    );
+    let button = control && control.querySelector(`.${NOW_PLAYING_BUTTON_CLASS}`);
+
+    if (!control) {
+      control = document.createElement('div');
+      control.className = NOW_PLAYING_CONTROL_CLASS;
+    }
+
+    if (!button) {
+      button = buildInlineButton(normalizedUrl);
+      button.classList.add(NOW_PLAYING_BUTTON_CLASS);
+      control.appendChild(button);
+    } else {
+      updateInlineButton(button, normalizedUrl);
+    }
+
+    controls.contextContainer.before(control);
+  }
+
   function upsertButtonForAmazonNowPlaying() {
     const miniPlayer = document.querySelector('#miniNPVTrackInfo');
     if (!miniPlayer || !isVisible(miniPlayer)) {
@@ -473,10 +568,12 @@
       return;
     }
 
-    const controlsRow = miniPlayer.parentElement;
-    const contextButton = controlsRow?.querySelector('music-button[icon-name="more"]');
-    const attachNode = (contextButton && contextButton.parentElement) || controlsRow || miniPlayer;
-    upsertButtonInNode(attachNode, normalizedUrl);
+    const controls = findAmazonNowPlayingControls(miniPlayer);
+    if (!controls) {
+      return;
+    }
+
+    upsertAmazonNowPlayingButton(controls, normalizedUrl);
   }
 
   function runOnce() {
@@ -501,6 +598,10 @@
   function watchDomChanges() {
     const observer = new MutationObserver((mutations) => {
       const shouldRun = mutations.some((mutation) => {
+        if (mutation.type === 'attributes') {
+          return true;
+        }
+
         if (mutation.type !== 'childList') {
           return false;
         }
@@ -526,11 +627,14 @@
     });
     observer.observe(document.documentElement || document.body, {
       subtree: true,
-      childList: true
+      childList: true,
+      attributes: true,
+      attributeFilter: ['href', 'primary-href', 'secondary-href-2', 'primary-text', 'secondary-text']
     });
   }
 
   function bootstrap() {
+    document.addEventListener('click', handleInlineButtonClick, true);
     runOnce();
     watchDomChanges();
   }
