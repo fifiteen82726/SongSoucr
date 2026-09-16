@@ -173,6 +173,81 @@ async function verifyHrefOnlyUpdate() {
   window.close();
 }
 
+async function verifyAmazonSearchSongItems() {
+  const dom = new JSDOM(
+    `<!doctype html>
+      <html>
+        <body>
+          <section id="songs">
+            <music-horizontal-item
+              id="song-one"
+              primary-text="Now You See Me"
+              secondary-text="Jay Chou"
+              primary-href="/tracks/B0CR5KW14W"
+            >
+              <music-button slot="buttons" icon-name="favorite"></music-button>
+              <music-button slot="buttons" icon-name="more"></music-button>
+            </music-horizontal-item>
+            <music-horizontal-item
+              id="song-two"
+              primary-text="Now You See Me"
+              secondary-text="Brian Tyler"
+              primary-href="/tracks/B0DJC7KN8M"
+            >
+              <music-button slot="buttons" icon-name="favorite"></music-button>
+              <music-button slot="buttons" icon-name="more"></music-button>
+            </music-horizontal-item>
+            <music-vertical-item
+              id="album"
+              primary-text="Now You See Me 2"
+              primary-href="/albums/B01GKFZ83W"
+            ></music-vertical-item>
+          </section>
+        </body>
+      </html>`,
+    {
+      url: 'https://music.amazon.com/search/now+you+see+me',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true
+    }
+  );
+
+  const { window } = dom;
+  window.chrome = {
+    runtime: {
+      lastError: null,
+      sendMessage(_message, callback) {
+        callback({ ok: true, data: {} });
+      }
+    }
+  };
+  window.Element.prototype.getClientRects = function getClientRects() {
+    return [{ width: 10, height: 10 }];
+  };
+
+  window.eval(contentScript);
+  window.document.dispatchEvent(new window.Event('DOMContentLoaded'));
+  await wait(window);
+
+  const songOne = window.document.getElementById('song-one');
+  const songTwo = window.document.getElementById('song-two');
+  const firstButton = songOne.querySelector('.tqq-inline-button');
+  const secondButton = songTwo.querySelector('.tqq-inline-button');
+  assert.ok(firstButton, 'each Amazon search song item should receive a download button');
+  assert.ok(secondButton, 'every Amazon search song item should receive a download button');
+  assert.strictEqual(firstButton.getAttribute('slot'), 'buttons');
+  assert.strictEqual(secondButton.getAttribute('slot'), 'buttons');
+  assert.strictEqual(firstButton.dataset.trackUrl, 'https://music.amazon.com/tracks/B0CR5KW14W');
+  assert.strictEqual(secondButton.dataset.trackUrl, 'https://music.amazon.com/tracks/B0DJC7KN8M');
+  assert.strictEqual(
+    window.document.getElementById('album').querySelector('.tqq-inline-button'),
+    null,
+    'albums are not individual tracks and should not receive a song download button'
+  );
+
+  window.close();
+}
+
 async function main() {
   const dom = new JSDOM(
     `<!doctype html>
@@ -269,6 +344,7 @@ async function main() {
   await verifyCanonicalLocationCandidate();
   await verifyDirectSiblingControls();
   await verifyHrefOnlyUpdate();
+  await verifyAmazonSearchSongItems();
   console.log('Amazon now-playing placement tests passed.');
 }
 

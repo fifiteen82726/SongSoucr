@@ -173,6 +173,14 @@
   }
 
   function getAttachTarget(element) {
+    const amazonTrackItem = element.closest('music-horizontal-item, music-vertical-item');
+    if (amazonTrackItem) {
+      return {
+        node: amazonTrackItem,
+        slot: amazonTrackItem.querySelector('music-button[slot="buttons"]') ? 'buttons' : undefined
+      };
+    }
+
     const amazonRow = element.closest('music-image-row');
     if (amazonRow) {
       return {
@@ -368,6 +376,23 @@
       const fallbackHref = row.querySelector('.content .col1 a[href*="trackAsin="]')?.getAttribute('href');
       const normalizedUrl = normalizeTrackUrl(primaryHref || fallbackHref);
       upsertButtonForTarget(row, normalizedUrl);
+    });
+  }
+
+  function upsertButtonsForAmazonTrackItems() {
+    if (!AMAZON_HOST_RE.test(window.location.hostname)) {
+      return;
+    }
+
+    const items = document.querySelectorAll(
+      'music-horizontal-item[primary-href], music-vertical-item[primary-href], music-image-row[primary-href], music-text-row[primary-href]'
+    );
+
+    items.forEach((item) => {
+      const normalizedUrl = normalizeTrackUrl(readRowHref(item));
+      if (normalizedUrl) {
+        upsertButtonForTarget(item, normalizedUrl);
+      }
     });
   }
 
@@ -579,6 +604,7 @@
   function runOnce() {
     upsertButtonsForTrackLinks();
     upsertButtonsForTrackRows();
+    upsertButtonsForAmazonTrackItems();
     upsertButtonsForAmazonRows();
     upsertButtonsForAmazonTextRows();
     upsertButtonForAmazonNowPlaying();
