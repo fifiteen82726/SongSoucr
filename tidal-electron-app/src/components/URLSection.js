@@ -7,11 +7,14 @@ function URLSection({ url, setUrl, disabled, loading }) {
         🔗 MUSIC URL
       </div>
       <div className="url-help">
-        Supports: Tidal • Amazon Music
+        Supports: Tidal • Amazon Music — tracks and playlists
+      </div>
+      <div className="url-help">
+        Amazon playlists open in your signed-in browser. Keep Tidal Quick Queue enabled.
       </div>
       <textarea
         className={`url-input ${loading ? 'loading' : ''}`}
-        placeholder={loading ? "Fetching song information..." : "Paste your Tidal or Amazon Music track URL here..."}
+        placeholder={loading ? "Fetching track or playlist information..." : "Paste your Tidal or Amazon Music track or playlist URL here..."}
         value={url}
         onChange={(e) => setUrl(e.target.value)}
         disabled={disabled}

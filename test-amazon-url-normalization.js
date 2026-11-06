@@ -103,4 +103,16 @@ assert.strictEqual(
   'Extension should accept direct Amazon track share URLs'
 );
 
+const personalPlaylistUrl = 'https://music.amazon.com/user-playlists/cf591a3e-bd13-42a2-a187-34fab3076fa9';
+assert.strictEqual(
+  normalizeAmazonUrl(`${personalPlaylistUrl}?trackAsin=B0CR5P7D5G&musicTerritory=US&ref=share#player`),
+  'https://music.amazon.com/tracks/B0CR5P7D5G?musicTerritory=US',
+  'Extension should normalize individual songs linked through personal playlists'
+);
+assert.strictEqual(
+  normalizeAmazonUrl(personalPlaylistUrl),
+  null,
+  'A personal playlist must not be mistaken for a single track by inline buttons'
+);
+
 console.log('Amazon URL normalization tests passed.');

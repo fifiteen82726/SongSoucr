@@ -63,6 +63,18 @@ async function addUrlToLocalQueue(url) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === 'AMAZON_PLAYLIST_RESULT') {
+    fetch(`${LOCAL_API_BASES[0]}/api/playlist/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message.result)
+    }).then(async response => {
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Playlist result was rejected by app.');
+      sendResponse({ ok: true, data });
+    }).catch(error => sendResponse({ ok: false, error: normalizeErrorMessage(error) }));
+    return true;
+  }
   if (!message || message.type !== 'ENQUEUE_TIDAL_URL') {
     return false;
   }

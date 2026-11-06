@@ -32,6 +32,61 @@ A professional macOS application for downloading music from Tidal with queue man
    - Watch download progress
    - Find MP3 files in `~/Desktop/DJ/`
 
+### Import an Amazon Music playlist
+
+1. Enable the **Tidal Quick Queue** extension in your default browser and sign in
+   to Amazon Music there. Reload the extension after updating this repository.
+2. Paste an Amazon Music `/user-playlists/<id>` or `/playlists/<id>` URL into the
+   app and click **Add to Queue**. The playlist opens in your signed-in browser.
+3. The extension reads the playlist rows and sends individual track URLs to the
+   app. The existing single-track downloader processes the queue one song at a
+   time with your selected format, method, and destination.
+
+This supports private playlists visible to your signed-in Amazon account without
+changing their sharing settings. It does not send the playlist URL to Lucida for
+playlist lookup. New and older Amazon row layouts are supported; lazy-loaded
+rows are collected by playlist position, with completeness checked against the
+displayed song count. Songs retain their order and repeated occurrences.
+
+The result shows the playlist title and added/skipped counts. An incomplete read,
+expired request or failed browser handoff leaves the queue unchanged. A playlist
+link with `trackAsin` selects that single track instead. Single-track downloads
+still depend on your chosen download service being available.
+
+### Run after pulling on another Mac
+
+Install Node.js (tested with Node 22), Yarn Classic (1.x), and FFmpeg first.
+From the repository root, run:
+
+```bash
+git switch main
+git pull --ff-only
+yarn --cwd tidal-electron-app install --frozen-lockfile
+yarn tidal-gui
+```
+
+`yarn tidal-gui` rebuilds the app and starts Electron. It works without a global
+alias. You can also run `bash tidal-electron-app/launch.sh` from the repo root.
+The bare `tidal-gui` command on an existing machine may be a personal shell alias;
+aliases are not copied by `git pull`.
+
+For Amazon playlists, load `browser-extension/tidal-quick-queue` as an unpacked
+extension in your default Chrome/Edge browser and sign in to Amazon Music there.
+After pulling updates, reload the extension and refresh Amazon Music. Version
+0.2.1 includes the playlist startup redirect fix.
+
+DoubleDouble also needs Python 3 with `requests`. To keep those dependencies
+local to this checkout:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install requests
+```
+
+The launcher activates this `.venv` automatically when present. Lucida's in-app
+single-track download path does not require Python. Batch search additionally
+requires `tidalapi` in that environment.
+
 ## Development Setup
 
 ### Prerequisites (Development Only)

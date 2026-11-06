@@ -8,7 +8,7 @@
   const VALID_PATH_RE = /^\/(?:browse\/)?(track|album|playlist|video)\//i;
   const TRACK_ID_RE = /(?:^|-)track-(\d+)(?:-|$)/i;
   const AMAZON_HOST_RE = /(^|\.)music\.amazon\.com$/i;
-  const AMAZON_ALLOWED_PATH_RE = /^\/(?:albums|playlists|tracks)\//i;
+  const AMAZON_ALLOWED_PATH_RE = /^\/(?:albums|playlists|user-playlists|tracks)\//i;
   const AMAZON_TRACK_PATH_RE = /^\/tracks\/([a-z0-9]+)/i;
   const ROW_SELECTOR = [
     '[data-test^="tracklist-row"]',
@@ -21,6 +21,33 @@
   ].join(', ');
   let activeRequests = 0;
   let scanScheduled = false;
+  const playlistReads = new Set();
+
+  async function readRequestedAmazonPlaylist() {
+    if (window.location.hostname !== 'music.amazon.com' || !window.TqqAmazonPlaylist) return;
+    const requestId = new URLSearchParams(window.location.hash.slice(1)).get('tqq-import');
+    if (!requestId || !/^[a-f0-9-]{36}$/i.test(requestId) || playlistReads.has(requestId)) return;
+    playlistReads.add(requestId);
+    const url = new URL(window.location.href);
+    url.hash = '';
+    let result;
+    try {
+      showToast('Reading playlist tracks…', 'info');
+      result = await window.TqqAmazonPlaylist.collectPlaylist(window);
+    } catch (error) {
+      result = { success: false, error: error.message };
+    }
+    chrome.runtime.sendMessage({
+      type: 'AMAZON_PLAYLIST_RESULT',
+      result: { ...result, requestId, url: url.toString() }
+    }, response => {
+      if (chrome.runtime.lastError || !response?.ok || !result.success) {
+        showToast(result.error || chrome.runtime.lastError?.message || response?.error || 'Failed to send playlist to app.', 'error');
+        return;
+      }
+      showToast(`Read ${result.tracks.length} playlist tracks; sent to Tidal Downloader.`, 'success');
+    });
+  }
 
   function isVisible(el) {
     if (!el) {
@@ -663,6 +690,8 @@
     document.addEventListener('click', handleInlineButtonClick, true);
     runOnce();
     watchDomChanges();
+    readRequestedAmazonPlaylist();
+    window.addEventListener('hashchange', readRequestedAmazonPlaylist);
   }
 
   if (document.readyState === 'loading') {

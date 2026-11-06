@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "tidal-gui": "bash tidal-electron-app/launch.sh"
+  },
   "dependencies": {
     "electron-is-dev": "^3.0.1",
     "os-name": "^6.1.0"

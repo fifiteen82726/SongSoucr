@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+const { randomUUID } = require('crypto');
 
 let mainWindow;
 let downloadProcess = null;
@@ -16,6 +17,7 @@ let isProcessingQueue = false;
 let captchaWindow = null;
 let captchaFlowPromise = null;
 let localIngestServer = null;
+const amazonPlaylistImports = new Map();
 let captchaArtifacts = {
   captchaToken: '',
   captchaResponse: ''
@@ -165,7 +167,21 @@ function cleanAmazonUrl(url) {
       }
     }
 
-    const allowedParams = ['marketplaceId', 'musicTerritory', 'trackAsin'];
+    const trackAsin = parsedUrl.searchParams.get('trackAsin');
+    const trackPathMatch = (parsedUrl.pathname || '').match(/^\/tracks\/([a-z0-9]+)/i);
+    const hasCanonicalTrack =
+      (trackAsin && /^[a-z0-9]+$/i.test(trackAsin)) ||
+      (trackPathMatch && trackPathMatch[1]);
+
+    if (trackAsin && /^[a-z0-9]+$/i.test(trackAsin)) {
+      parsedUrl.pathname = `/tracks/${trackAsin}`;
+    } else if (trackPathMatch && trackPathMatch[1]) {
+      parsedUrl.pathname = `/tracks/${trackPathMatch[1]}`;
+    }
+
+    const allowedParams = hasCanonicalTrack
+      ? ['marketplaceId', 'musicTerritory']
+      : ['marketplaceId', 'musicTerritory', 'trackAsin'];
     const cleanedQuery = new URLSearchParams();
     for (const key of allowedParams) {
       const value = parsedUrl.searchParams.get(key);
@@ -174,6 +190,7 @@ function cleanAmazonUrl(url) {
       }
     }
     parsedUrl.search = cleanedQuery.toString();
+    parsedUrl.hash = '';
 
     return parsedUrl.toString();
   } catch (error) {
@@ -205,6 +222,62 @@ function isTidalPlaylistUrl(url) {
   } catch (error) {
     const fallback = String(url || '').toLowerCase();
     return fallback.includes('tidal.com/playlist/') || fallback.includes('tidal.com/browse/playlist/');
+  }
+}
+
+function isAmazonPlaylistUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    if (
+      !['http:', 'https:'].includes(parsedUrl.protocol) ||
+      !['music.amazon.com', 'amazon.com', 'www.amazon.com'].includes(parsedUrl.hostname.toLowerCase())
+    ) {
+      return false;
+    }
+
+    const pathname = parsedUrl.pathname.replace(/^\/music\/player(?=\/)/i, '');
+    return /^\/(?:user-playlists|playlists)\/[a-z0-9-]+\/?$/i.test(pathname) &&
+      !/^[a-z0-9]+$/i.test(parsedUrl.searchParams.get('trackAsin') || '');
+  } catch (error) {
+    return false;
+  }
+}
+
+function canonicalizeAmazonTrackUrl(url) {
+  if (typeof url !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    if (
+      !['http:', 'https:'].includes(parsedUrl.protocol) ||
+      !['music.amazon.com', 'amazon.com', 'www.amazon.com'].includes(parsedUrl.hostname.toLowerCase())
+    ) {
+      return null;
+    }
+
+    const pathname = parsedUrl.pathname.replace(/^\/music\/player(?=\/)/i, '');
+    if (!/^\/(?:tracks|albums|playlists|user-playlists)\/[a-z0-9-]+\/?$/i.test(pathname)) {
+      return null;
+    }
+
+    const trackMatch = pathname.match(/^\/tracks\/([a-z0-9]+)\/?$/i);
+    const trackAsin = parsedUrl.searchParams.get('trackAsin') || (trackMatch && trackMatch[1]);
+    if (!trackAsin || !/^[a-z0-9]+$/i.test(trackAsin)) {
+      return null;
+    }
+
+    const canonicalUrl = new URL(`https://music.amazon.com/tracks/${trackAsin}`);
+    for (const key of ['marketplaceId', 'musicTerritory']) {
+      const value = parsedUrl.searchParams.get(key);
+      if (value) {
+        canonicalUrl.searchParams.set(key, value);
+      }
+    }
+    return canonicalUrl.toString();
+  } catch (error) {
+    return null;
   }
 }
 
@@ -1190,6 +1263,60 @@ async function fetchLucidaPlaylistTracks(sourceUrl) {
     context: 'Lucida playlist metadata'
   });
 
+  return preparePlaylistMetadata(payload, normalizedUrl);
+}
+
+function requestAmazonPlaylistFromBrowser(sourceUrl) {
+  return new Promise((resolve, reject) => {
+    const requestId = randomUUID();
+    const url = new URL(sourceUrl);
+    url.hash = new URLSearchParams({ 'tqq-import': requestId }).toString();
+    const finish = (error, payload) => {
+      const pending = amazonPlaylistImports.get(requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      amazonPlaylistImports.delete(requestId);
+      if (error) reject(error);
+      else resolve(payload);
+    };
+    const timer = setTimeout(() => finish(new Error(
+      'Amazon playlist read timed out. Reload the Tidal Quick Queue extension in your default browser, sign in to Amazon Music, and retry.'
+    )), 90000);
+    amazonPlaylistImports.set(requestId, { sourceUrl, finish, timer });
+    Promise.resolve().then(() => shell.openExternal(url.toString())).catch(error => finish(error));
+  });
+}
+
+function completeAmazonPlaylistImport(body) {
+  const pending = amazonPlaylistImports.get(body && body.requestId);
+  if (!pending || normalizeMusicUrl(body.url) !== pending.sourceUrl) {
+    return { success: false, error: 'Unknown or expired Amazon playlist import.' };
+  }
+  if (body.success !== true || body.error) {
+    const error = typeof body.error === 'string' ? body.error : 'Amazon playlist read failed.';
+    pending.finish(new Error(error));
+    return { success: false, error };
+  } else {
+    // Validate before completing the read; malformed/empty lists never reach the queue.
+    try {
+      preparePlaylistMetadata(body, pending.sourceUrl);
+      const { requestId, url, ...payload } = body;
+      pending.finish(null, payload);
+    } catch (error) {
+      pending.finish(error);
+      return { success: false, error: error.message };
+    }
+  }
+  return { success: true };
+}
+
+async function fetchAmazonPlaylistTracks(sourceUrl) {
+  const normalizedUrl = normalizeMusicUrl(sourceUrl);
+  const payload = await requestAmazonPlaylistFromBrowser(normalizedUrl);
+  return preparePlaylistMetadata(payload, normalizedUrl);
+}
+
+function preparePlaylistMetadata(payload, normalizedUrl) {
   if (!payload || payload.success !== true) {
     throw new Error(`Playlist lookup failed: ${extractLucidaErrorMessage(payload)}`);
   }
@@ -1199,9 +1326,12 @@ async function fetchLucidaPlaylistTracks(sourceUrl) {
   }
 
   const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+  const canonicalizeTrackUrl = detectMusicService(normalizedUrl) === 'amazon'
+    ? canonicalizeAmazonTrackUrl
+    : canonicalizeTidalTrackUrl;
   const preparedTracks = tracks
     .map((track, index) => {
-      const canonicalUrl = canonicalizeTidalTrackUrl(track && track.url);
+      const canonicalUrl = canonicalizeTrackUrl(track && track.url);
       if (!canonicalUrl) {
         return null;
       }
@@ -1628,9 +1758,11 @@ async function addToQueueInternal({ url, format, downloadPath, downloadMethod = 
   const normalizedUrl = normalizeMusicUrl(url);
   console.log('Fetching metadata for:', normalizedUrl, 'method:', downloadMethod);
 
-  if (isTidalPlaylistUrl(normalizedUrl)) {
-    const playlistData = await fetchLucidaPlaylistTracks(normalizedUrl);
-    const queueBaseId = Date.now();
+  if (isTidalPlaylistUrl(normalizedUrl) || isAmazonPlaylistUrl(normalizedUrl)) {
+    const playlistData = isAmazonPlaylistUrl(normalizedUrl)
+      ? await fetchAmazonPlaylistTracks(normalizedUrl)
+      : await fetchLucidaPlaylistTracks(normalizedUrl);
+    const queueBaseId = randomUUID();
     const playlistItems = playlistData.tracks.map((track, index) => ({
       id: `${queueBaseId}-${index}`,
       title: track.title,
@@ -1753,6 +1885,16 @@ async function startLocalIngestServer() {
         const message = error && error.message ? error.message : 'Failed to add to queue.';
         const badRequest = message === 'Invalid JSON body.' || message === 'Request body is too large.';
         writeJsonResponse(res, badRequest ? 400 : 500, { success: false, error: message });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/playlist/result') {
+      try {
+        const result = completeAmazonPlaylistImport(await parseJsonBody(req));
+        writeJsonResponse(res, result.success ? 200 : 400, result);
+      } catch (error) {
+        writeJsonResponse(res, 400, { success: false, error: error.message });
       }
       return;
     }

@@ -266,7 +266,7 @@ function App() {
     }
 
     setIsAddingToQueue(true);
-    setStatus('🔍 Fetching song information...');
+    setStatus('🔍 Fetching track or playlist information...');
 
     try {
       const result = await window.electronAPI.addToQueue({
